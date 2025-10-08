@@ -5,8 +5,9 @@ use axum::{Router, extract::ws::WebSocketUpgrade, response::IntoResponse, routin
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::mpsc;
-use tracing::{error, info};
+use tokio::sync::{mpsc, RwLock, broadcast};
+use tracing::{error, info, warn};
+use uuid::Uuid;
 
 mod audio_fanout;
 mod audio_transcode;
@@ -15,11 +16,85 @@ mod webrtc;
 
 use audio_fanout::AudioFanout;
 
+/// Push-to-talk state tracking
+struct PttState {
+    /// Session ID of the client currently transmitting (if any)
+    active_session: Arc<RwLock<Option<Uuid>>>,
+    /// Broadcast channel for PTT state updates to all clients
+    state_tx: broadcast::Sender<PttStateMessage>,
+}
+
+/// PTT state message broadcast to all clients
+#[derive(Clone, Debug)]
+struct PttStateMessage {
+    transmitting: bool,
+    #[allow(dead_code)]
+    session_id: Option<Uuid>,
+}
+
+impl PttState {
+    fn new() -> Self {
+        let (state_tx, _) = broadcast::channel(100);
+        Self {
+            active_session: Arc::new(RwLock::new(None)),
+            state_tx,
+        }
+    }
+
+    /// Attempt to acquire PTT lock for a session
+    async fn try_acquire(&self, session_id: Uuid) -> bool {
+        let mut active = self.active_session.write().await;
+        if active.is_none() {
+            *active = Some(session_id);
+            info!("PTT acquired by session {}", session_id);
+            
+            // Broadcast state change
+            let _ = self.state_tx.send(PttStateMessage {
+                transmitting: true,
+                session_id: Some(session_id),
+            });
+            
+            true
+        } else {
+            warn!("PTT denied for session {} - already in use by {:?}", session_id, *active);
+            false
+        }
+    }
+
+    /// Release PTT lock for a session
+    async fn release(&self, session_id: Uuid) {
+        let mut active = self.active_session.write().await;
+        if *active == Some(session_id) {
+            *active = None;
+            info!("PTT released by session {}", session_id);
+            
+            // Broadcast state change
+            let _ = self.state_tx.send(PttStateMessage {
+                transmitting: false,
+                session_id: None,
+            });
+        }
+    }
+
+    /// Subscribe to PTT state changes
+    fn subscribe(&self) -> broadcast::Receiver<PttStateMessage> {
+        self.state_tx.subscribe()
+    }
+
+    /// Check if currently transmitting
+    async fn is_transmitting(&self) -> bool {
+        let active = self.active_session.read().await;
+        active.is_some()
+    }
+}
+
 // Application state shared across all connections
 #[derive(Clone)]
 struct AppState {
     audio_fanout: Arc<AudioFanout>,
     webrtc_infra: Arc<webrtc::WebRtcInfra>,
+    ptt_state: Arc<PttState>,
+    doorbird_client: doorbird::Client,
 }
 
 #[tokio::main]
@@ -72,16 +147,21 @@ async fn main() {
     }
 
     // Create audio fanout system (buffer 100 samples = ~2 seconds)
-    let audio_fanout = AudioFanout::new(doorbird_client, 100);
+    let audio_fanout = AudioFanout::new(doorbird_client.clone(), 100);
 
     // Initialize shared WebRTC infrastructure (UDP mux on port 50000)
     let webrtc_infra = webrtc::WebRtcInfra::new()
         .await
         .expect("Failed to initialize WebRTC infrastructure");
 
+    // Create PTT state manager
+    let ptt_state = Arc::new(PttState::new());
+
     let state = AppState {
         audio_fanout,
         webrtc_infra,
+        ptt_state,
+        doorbird_client,
     };
 
     let app = Router::new()
@@ -119,6 +199,10 @@ async fn ws_handler(
 }
 
 async fn handle_socket(socket: WebSocket, state: AppState) {
+    // Generate unique session ID
+    let session_id = Uuid::new_v4();
+    info!("New WebSocket connection: session {}", session_id);
+
     let (ws_tx, mut ws_rx) = {
         let (mut sender, receiver) = socket.split();
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
@@ -135,10 +219,28 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         (out_tx, receiver)
     };
 
+    // Subscribe to PTT state changes
+    let mut ptt_state_rx = state.ptt_state.subscribe();
+    let ws_tx_for_ptt = ws_tx.clone();
+    
+    // Spawn task to forward PTT state changes to this client
+    let ptt_forward_task = tokio::spawn(async move {
+        while let Ok(ptt_msg) = ptt_state_rx.recv().await {
+            let json = serde_json::json!({
+                "type": "ptt_state",
+                "transmitting": ptt_msg.transmitting,
+            });
+            let _ = ws_tx_for_ptt.send(Message::Text(json.to_string().into()));
+        }
+    });
+
     let session = match webrtc::WebRtcSession::new(
         state.webrtc_infra.clone(),
         ws_tx.clone(),
         state.audio_fanout.clone(),
+        state.ptt_state.clone(),
+        state.doorbird_client.clone(),
+        session_id,
     )
     .await
     {
@@ -149,17 +251,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         }
     };
 
+    // Send initial PTT state
+    let initial_transmitting = state.ptt_state.is_transmitting().await;
+    let initial_state_msg = serde_json::json!({
+        "type": "ptt_state",
+        "transmitting": initial_transmitting,
+    });
+    let _ = ws_tx.send(Message::Text(initial_state_msg.to_string().into()));
+
     // Process incoming signaling messages
     while let Some(Ok(msg)) = ws_rx.next().await {
         match msg {
             Message::Text(txt) => {
-                if let Err(e) = handle_signal_text(&session, &txt).await {
+                if let Err(e) = handle_signal_text(&session, &state, session_id, &txt).await {
                     error!("signal handling error: {:#}", e);
                 }
             }
             Message::Binary(bin) => {
                 if let Ok(txt) = String::from_utf8(bin.to_vec()) {
-                    handle_signal_text(&session, &txt)
+                    handle_signal_text(&session, &state, session_id, &txt)
                         .await
                         .unwrap_or_else(|e| {
                             error!("signal handling error: {:#}", e);
@@ -172,13 +282,25 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 
     // Clean up WebRTC connection when WebSocket closes
-    info!("WebSocket closed, cleaning up WebRTC session");
+    info!("WebSocket closed, cleaning up session {}", session_id);
+    
+    // Release PTT if this session had it
+    state.ptt_state.release(session_id).await;
+    
+    // Stop PTT forward task
+    ptt_forward_task.abort();
+    
     if let Err(e) = session.pc.close().await {
         error!("Error closing peer connection: {:#}", e);
     }
 }
 
-async fn handle_signal_text(session: &webrtc::WebRtcSession, txt: &str) -> anyhow::Result<()> {
+async fn handle_signal_text(
+    session: &webrtc::WebRtcSession,
+    state: &AppState,
+    session_id: Uuid,
+    txt: &str,
+) -> anyhow::Result<()> {
     let v: serde_json::Value = serde_json::from_str(txt)?;
     let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     match t {
@@ -218,6 +340,29 @@ async fn handle_signal_text(session: &webrtc::WebRtcSession, txt: &str) -> anyho
             session
                 .add_ice_candidate(candidate, sdp_mid, sdp_mline_index)
                 .await?;
+        }
+        "start_ptt" => {
+            info!("PTT start requested by session {}", session_id);
+            if state.ptt_state.try_acquire(session_id).await {
+                info!("PTT granted to session {}", session_id);
+                session.start_ptt().await?;
+                let msg = serde_json::json!({
+                    "type": "ptt_granted",
+                });
+                let _ = session.ws_out.send(Message::Text(msg.to_string().into()));
+            } else {
+                warn!("PTT denied to session {} - already in use", session_id);
+                let msg = serde_json::json!({
+                    "type": "ptt_denied",
+                    "reason": "another_user",
+                });
+                let _ = session.ws_out.send(Message::Text(msg.to_string().into()));
+            }
+        }
+        "stop_ptt" => {
+            info!("PTT stop requested by session {}", session_id);
+            session.stop_ptt().await;
+            state.ptt_state.release(session_id).await;
         }
         _ => {}
     }

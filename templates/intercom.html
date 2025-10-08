@@ -8,6 +8,18 @@
     <span id="status" class="badge text-bg-secondary">Idle</span>
     <button id="connectBtn" class="btn btn-primary btn-sm">Connect</button>
 </div>
+<div class="mb-3">
+    <button id="transmitBtn" class="btn btn-success" disabled>
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-mic-fill"
+            viewBox="0 0 16 16">
+            <path d="M5 3a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z" />
+            <path
+                d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5" />
+        </svg>
+        <span id="transmitText">Start Transmitting</span>
+    </button>
+    <small class="text-muted" id="transmitStatus"></small>
+</div>
 <p class="text-muted">Open the console to see detailed WebRTC logs (candidates, states).</p>
 <audio id="audio" autoplay playsinline></audio>
 {% endblock %}
@@ -18,15 +30,148 @@
     const statusEl = document.getElementById('status');
     const audioEl = document.getElementById('audio');
     const connectBtn = document.getElementById('connectBtn');
+    const transmitBtn = document.getElementById('transmitBtn');
+    const transmitText = document.getElementById('transmitText');
+    const transmitStatus = document.getElementById('transmitStatus');
+
+    let pc = null;
+    let socket = null;
+    let localStream = null;
+    let isTransmitting = false;
+    let othersTransmitting = false;
 
     function setStatus(text, cls) {
         statusEl.textContent = text;
         statusEl.className = 'badge ' + (cls || 'text-bg-secondary');
     }
 
+    function updateTransmitButton() {
+        if (!pc || pc.connectionState !== 'connected') {
+            transmitBtn.disabled = true;
+            transmitBtn.className = 'btn btn-secondary';
+            transmitText.textContent = 'Start Transmitting';
+            transmitStatus.textContent = '';
+            return;
+        }
+
+        if (othersTransmitting) {
+            transmitBtn.disabled = true;
+            transmitBtn.className = 'btn btn-warning';
+            transmitText.textContent = 'Start Transmitting';
+            transmitStatus.textContent = 'Line busy';
+        } else if (isTransmitting) {
+            transmitBtn.disabled = false;
+            transmitBtn.className = 'btn btn-danger';
+            transmitText.textContent = 'Stop Transmitting';
+            transmitStatus.textContent = 'Transmitting...';
+        } else {
+            transmitBtn.disabled = false;
+            transmitBtn.className = 'btn btn-success';
+            transmitText.textContent = 'Start Transmitting';
+            transmitStatus.textContent = '';
+        }
+    }
+
+    async function startTransmitting() {
+        if (isTransmitting || othersTransmitting) return;
+
+        log('Starting transmission...');
+
+        // Optimistically set transmitting state
+        isTransmitting = true;
+        updateTransmitButton();
+
+        try {
+            // Request microphone access if we don't have it
+            if (!localStream) {
+                log('Requesting microphone access...');
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                    }
+                });
+                log('Microphone access granted');
+            }
+
+            // Add microphone track to peer connection (this will trigger on_track on server)
+            const audioTrack = localStream.getAudioTracks()[0];
+
+            // Check if we already have a sender for our local audio
+            let sender = pc.getSenders().find(s => s.track && s.track.kind === 'audio' && s.track.id === audioTrack.id);
+
+            if (!sender) {
+                // Add the track - this triggers renegotiation
+                sender = pc.addTrack(audioTrack, localStream);
+                log('Added microphone track to peer connection');
+
+                // Create and send new offer to trigger renegotiation
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+                log('Sent renegotiation offer with microphone track');
+            } else {
+                log('Microphone track already added');
+            }
+
+            // Request transmission from server
+            socket.send(JSON.stringify({ type: 'start_ptt' }));
+
+        } catch (e) {
+            console.error('Failed to start transmission:', e);
+            alert('Failed to access microphone: ' + e.message);
+            // Reset state on error
+            isTransmitting = false;
+            updateTransmitButton();
+        }
+    }
+
+    async function stopTransmitting() {
+        if (!isTransmitting) return;
+
+        log('Stopping transmission...');
+
+        // Mark as inactive
+        isTransmitting = false;
+        // Clear others transmitting flag when we stop
+        othersTransmitting = false;
+        updateTransmitButton();
+
+        // Remove microphone track from peer connection
+        if (localStream) {
+            const audioTrack = localStream.getAudioTracks()[0];
+            const sender = pc.getSenders().find(s => s.track && s.track.id === audioTrack.id);
+            if (sender) {
+                pc.removeTrack(sender);
+                log('Removed microphone track from peer connection');
+
+                // Create and send new offer to trigger renegotiation
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                socket.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+                log('Sent renegotiation offer without microphone track');
+            }
+        }
+
+        // Notify server
+        socket.send(JSON.stringify({ type: 'stop_ptt' }));
+    }
+
+    function toggleTransmit() {
+        if (isTransmitting) {
+            stopTransmitting();
+        } else {
+            startTransmitting();
+        }
+    }
+
+    // Transmit button event handler - simple toggle on click
+    transmitBtn.addEventListener('click', toggleTransmit);
+
     async function connect() {
         setStatus('Connecting', 'text-bg-warning');
-        const pc = new RTCPeerConnection({
+        pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
 
@@ -93,16 +238,18 @@
                     log('ICE connection closed');
                     break;
             }
+            updateTransmitButton();
         };
         pc.onconnectionstatechange = () => {
             log('peer connection state changed:', pc.connectionState);
+            updateTransmitButton();
         };
         pc.ontrack = (e) => {
             log('remote track received', e.streams[0]);
             audioEl.srcObject = e.streams[0];
         };
 
-        const socket = new WebSocket(`ws://${location.host}/ws`);
+        socket = new WebSocket(`ws://${location.host}/ws`);
         socket.onopen = async () => {
             log('✓ WebSocket connected');
             const offer = await pc.createOffer();
@@ -133,6 +280,41 @@
                 } catch (e) {
                     console.error('✗ addIceCandidate failed:', e);
                 }
+            } else if (msg.type === 'ptt_granted') {
+                log('✓ Transmission granted');
+                // Server confirmed transmission lock acquired
+            } else if (msg.type === 'ptt_denied') {
+                log('✗ Transmission denied:', msg.reason);
+                // Server denied - line is busy, revert state
+                isTransmitting = false;
+                updateTransmitButton();
+
+                // Revert by removing the track
+                if (localStream) {
+                    const audioTrack = localStream.getAudioTracks()[0];
+                    const sender = pc.getSenders().find(s => s.track && s.track.id === audioTrack.id);
+                    if (sender) {
+                        pc.removeTrack(sender);
+                    }
+                }
+
+                // Show "Line busy" message
+                transmitStatus.textContent = 'Line busy - try again later';
+                setTimeout(() => {
+                    if (!isTransmitting) {
+                        transmitStatus.textContent = '';
+                    }
+                }, 3000);
+            } else if (msg.type === 'ptt_state') {
+                log('Transmission state update:', msg.transmitting);
+                // If someone started transmitting and it's not us, set othersTransmitting
+                // If someone stopped transmitting, always clear othersTransmitting
+                if (msg.transmitting && !isTransmitting) {
+                    othersTransmitting = true;
+                } else if (!msg.transmitting) {
+                    othersTransmitting = false;
+                }
+                updateTransmitButton();
             }
         };
         socket.onclose = () => {

@@ -24,3 +24,5 @@ rubato = "0.16"
 dotenvy = "0.15"
 bytes = "1"
 socket2 = "0.5"
+uuid = { version = "1", features = ["v4"] }
+tokio-stream = { version = "0.1", features = ["sync"] }

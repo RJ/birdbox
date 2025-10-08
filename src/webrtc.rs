@@ -1,11 +1,15 @@
 use crate::audio_fanout::AudioFanout;
+use crate::audio_transcode::ReverseAudioTranscoder;
 use anyhow::Result;
 use axum::extract::ws::Message;
+use bytes::Bytes;
+use futures_util::stream::StreamExt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, info};
+use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tracing::{error, info, warn};
+use uuid::Uuid;
 use webrtc::api::API;
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::{MIME_TYPE_OPUS, MediaEngine};
@@ -177,9 +181,30 @@ impl WebRtcInfra {
     }
 }
 
+/// PTT transmission handle - when dropped, stops transmission
+struct PttTransmitHandle {
+    stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+impl Drop for PttTransmitHandle {
+    fn drop(&mut self) {
+        if let Some(tx) = self.stop_tx.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 pub struct WebRtcSession {
     pub pc: Arc<RTCPeerConnection>,
     pub ws_out: UnboundedSender<Message>,
+    #[allow(dead_code)]
+    ptt_state: Arc<crate::PttState>,
+    doorbird_client: doorbird::Client,
+    session_id: Uuid,
+    /// Channel for sending Opus audio from client to PTT transcoder
+    ptt_audio_tx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Bytes>>>>,
+    /// Handle for current PTT transmission (if active)
+    ptt_handle: Arc<Mutex<Option<PttTransmitHandle>>>,
 }
 
 impl WebRtcSession {
@@ -187,6 +212,9 @@ impl WebRtcSession {
         infra: Arc<WebRtcInfra>,
         ws_out: UnboundedSender<Message>,
         audio_fanout: Arc<AudioFanout>,
+        ptt_state: Arc<crate::PttState>,
+        doorbird_client: doorbird::Client,
+        session_id: Uuid,
     ) -> Result<Self> {
         let cfg = RTCConfiguration {
             ice_servers: vec![RTCIceServer {
@@ -244,7 +272,7 @@ impl WebRtcSession {
             Box::pin(async {})
         }));
 
-        // Prepare audio track (Opus samples) and tone task
+        // Prepare audio track (Opus samples) for sending to client
         let track = Arc::new(TrackLocalStaticSample::new(
             webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_OPUS.to_string(),
@@ -275,10 +303,78 @@ impl WebRtcSession {
             }
         });
 
+        // Set up handler to read incoming audio from client for PTT
+        let ptt_audio_tx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedSender<Bytes>>>> =
+            Arc::new(Mutex::new(None));
+        let ptt_audio_tx_clone = ptt_audio_tx.clone();
+
+        // Set up on_track handler to receive audio from client when they start transmitting
+        pc.on_track(Box::new(move |track, _receiver, _transceiver| {
+            let ptt_audio_tx = ptt_audio_tx_clone.clone();
+            Box::pin(async move {
+                info!(
+                    "Received remote audio track from client: kind={}",
+                    track.kind()
+                );
+
+                tokio::spawn(async move {
+                    info!("Starting to read incoming audio from client");
+                    let mut packet_count = 0;
+                    loop {
+                        match track.read_rtp().await {
+                            Ok((rtp_packet, _)) => {
+                                packet_count += 1;
+                                if packet_count % 50 == 0 {
+                                    info!("Received {} RTP packets from client", packet_count);
+                                }
+
+                                // Extract Opus payload
+                                let opus_data = Bytes::copy_from_slice(&rtp_packet.payload);
+
+                                // Send to PTT transcoder if active
+                                let tx_opt = ptt_audio_tx.lock().await;
+                                if let Some(tx) = tx_opt.as_ref() {
+                                    if tx.send(opus_data).is_err() {
+                                        // Channel closed, stop reading
+                                        info!(
+                                            "PTT audio channel closed after {} packets",
+                                            packet_count
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                if packet_count > 0 {
+                                    info!(
+                                        "Stopped reading audio after {} packets: {:#}",
+                                        packet_count, e
+                                    );
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    info!(
+                        "Stopped reading incoming audio track (received {} packets total)",
+                        packet_count
+                    );
+                });
+            })
+        }));
+
         // Start audio streaming from DoorBird fanout
         start_audio_stream_task(track.clone(), audio_fanout);
 
-        Ok(Self { pc, ws_out })
+        Ok(Self {
+            pc,
+            ws_out,
+            ptt_state,
+            doorbird_client,
+            session_id,
+            ptt_audio_tx,
+            ptt_handle: Arc::new(Mutex::new(None)),
+        })
     }
 
     pub async fn set_remote_offer_and_create_answer(
@@ -311,6 +407,134 @@ impl WebRtcSession {
         };
         self.pc.add_ice_candidate(init).await?;
         Ok(())
+    }
+
+    /// Start push-to-talk audio transmission to DoorBird
+    pub async fn start_ptt(&self) -> Result<()> {
+        info!("Starting PTT for session {}", self.session_id);
+
+        // Create channel for audio data
+        let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+
+        // Set the channel so on_track can send to it
+        {
+            let mut tx_lock = self.ptt_audio_tx.lock().await;
+            *tx_lock = Some(audio_tx);
+        }
+
+        // Create stop signal
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+
+        // Store handle
+        {
+            let mut handle_lock = self.ptt_handle.lock().await;
+            *handle_lock = Some(PttTransmitHandle {
+                stop_tx: Some(stop_tx),
+            });
+        }
+
+        // Spawn task to transcode and transmit audio
+        let doorbird_client = self.doorbird_client.clone();
+        let session_id = self.session_id;
+
+        tokio::spawn(async move {
+            info!("PTT transmission task started for session {}", session_id);
+
+            // Create reverse transcoder
+            let mut transcoder = match ReverseAudioTranscoder::new() {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to create reverse transcoder: {:#}", e);
+                    return;
+                }
+            };
+
+            // Create stream of G.711 μ-law data
+            let (ulaw_tx, ulaw_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+
+            // Spawn transcoding task
+            let transcode_task = tokio::spawn(async move {
+                let mut opus_count = 0;
+                let mut ulaw_count = 0;
+                while let Some(opus_data) = audio_rx.recv().await {
+                    opus_count += 1;
+                    // Transcode Opus to G.711 μ-law
+                    match transcoder.process_chunk(&opus_data) {
+                        Ok(ulaw_frames) => {
+                            for frame in ulaw_frames {
+                                ulaw_count += 1;
+                                if ulaw_tx.send(Bytes::from(frame)).is_err() {
+                                    // Channel closed
+                                    info!(
+                                        "µ-law channel closed after {} opus packets, {} µ-law frames",
+                                        opus_count, ulaw_count
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Transcoding error: {:#}", e);
+                        }
+                    }
+                }
+
+                // Flush any remaining data
+                if let Ok(ulaw_frames) = transcoder.flush() {
+                    for frame in ulaw_frames {
+                        ulaw_count += 1;
+                        let _ = ulaw_tx.send(Bytes::from(frame));
+                    }
+                }
+
+                info!(
+                    "Transcoding task finished: {} opus packets -> {} µ-law frames",
+                    opus_count, ulaw_count
+                );
+            });
+
+            // Create stream for DoorBird
+            let ulaw_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(ulaw_rx);
+            let result_stream = ulaw_stream.map(Ok::<Bytes, anyhow::Error>);
+
+            // Transmit to DoorBird (this blocks until stream ends or error)
+            let transmit_result = tokio::select! {
+                result = doorbird_client.audio_transmit(result_stream) => {
+                    result
+                }
+                _ = &mut stop_rx => {
+                    info!("PTT transmission stopped by user");
+                    Ok(())
+                }
+            };
+
+            // Stop transcoding task
+            transcode_task.abort();
+
+            match transmit_result {
+                Ok(_) => info!("PTT transmission completed for session {}", session_id),
+                Err(e) => error!("PTT transmission error for session {}: {:#}", session_id, e),
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Stop push-to-talk audio transmission
+    pub async fn stop_ptt(&self) {
+        info!("Stopping PTT for session {}", self.session_id);
+
+        // Clear the audio channel
+        {
+            let mut tx_lock = self.ptt_audio_tx.lock().await;
+            *tx_lock = None;
+        }
+
+        // Drop the handle (triggers stop signal)
+        {
+            let mut handle_lock = self.ptt_handle.lock().await;
+            *handle_lock = None;
+        }
     }
 }
 
