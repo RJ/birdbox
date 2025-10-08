@@ -6,14 +6,8 @@ services:
       - "3000:3000"
       # Single UDP port for WebRTC media (using UDP mux)
       - "50000:50000/udp"
-    environment:
-      # Set to your Mac's LAN IP (e.g., run: ipconfig getifaddr en0)
-      # This is required for WebRTC to work from other devices on your LAN
-      - HOST_IP=${HOST_IP:-10.0.0.154}
-      # Single UDP port for WebRTC media (must match port mapping above)
-      - UDP_PORT=50000
-      # Logging level: trace, debug, info, warn, error
-      - RUST_LOG=${RUST_LOG:-info}
+    env_file:
+      - .env
     volumes:
       # Mount templates for easy updates without rebuild
       - ./templates:/app/templates:ro

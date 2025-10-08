@@ -8,6 +8,7 @@ COPY Cargo.toml Cargo.lock ./
 
 # Copy source code
 COPY src ./src
+COPY doorbird ./doorbird
 COPY templates ./templates
 
 # Build for release

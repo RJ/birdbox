@@ -1,9 +1,9 @@
+use crate::audio_fanout::AudioFanout;
 use anyhow::Result;
 use axum::extract::ws::Message;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::{self, Duration};
 use tracing::{error, info};
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::{MIME_TYPE_OPUS, MediaEngine};
@@ -26,7 +26,10 @@ pub struct WebRtcSession {
 }
 
 impl WebRtcSession {
-    pub async fn new(ws_out: UnboundedSender<Message>) -> Result<Self> {
+    pub async fn new(
+        ws_out: UnboundedSender<Message>,
+        audio_fanout: Arc<AudioFanout>,
+    ) -> Result<Self> {
         // MediaEngine with Opus
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
@@ -46,10 +49,27 @@ impl WebRtcSession {
         let udp_mux = UDPMuxDefault::new(UDPMuxParams::new(udp_socket));
         setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
 
-        if let Ok(host_ip) = std::env::var("HOST_IP") {
-            info!("Configuring NAT 1:1 mapping with HOST_IP={}", host_ip);
+        // Configure NAT 1:1 IP mapping
+        let host_ip = if let Ok(ip) = std::env::var("HOST_IP") {
+            info!("Using HOST_IP from environment: {}", ip);
+            Some(ip)
+        } else {
+            // Auto-detect LAN IP when HOST_IP not set (for non-Docker deployments)
+            match get_local_ip() {
+                Some(ip) => {
+                    info!("Auto-detected local IP: {}", ip);
+                    Some(ip)
+                }
+                None => {
+                    info!("Could not auto-detect local IP, using all interfaces");
+                    None
+                }
+            }
+        };
+
+        if let Some(ip) = host_ip {
             setting_engine.set_nat_1to1_ips(
-                vec![host_ip],
+                vec![ip],
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
         }
@@ -147,8 +167,8 @@ impl WebRtcSession {
             }
         });
 
-        // Start tone generator task
-        start_tone_sample_task(track.clone());
+        // Start audio streaming from DoorBird fanout
+        start_audio_stream_task(track.clone(), audio_fanout);
 
         Ok(Self { pc, ws_out })
     }
@@ -186,62 +206,40 @@ impl WebRtcSession {
     }
 }
 
-fn start_tone_sample_task(track: Arc<TrackLocalStaticSample>) {
+fn start_audio_stream_task(track: Arc<TrackLocalStaticSample>, audio_fanout: Arc<AudioFanout>) {
     tokio::spawn(async move {
-        // Generate PCM f32 and encode as Opus using audiopus
-        let sample_rate = 48_000f32;
-        let channels = audiopus::Channels::Mono;
-        let encoder = match audiopus::coder::Encoder::new(
-            audiopus::SampleRate::Hz48000,
-            channels,
-            audiopus::Application::Audio,
-        ) {
-            Ok(e) => e,
-            Err(e) => {
-                error!("opus encoder init failed: {:#}", e);
-                return;
-            }
-        };
+        info!("WebRTC audio track subscribed to DoorBird fanout");
 
-        let tone_freq = 440f32; // A4
-        let frame_ms = 20f32;
-        let samples_per_frame = (sample_rate * (frame_ms / 1000.0)) as usize; // 960
-        let mut phase: f32 = 0.0;
-        let two_pi = std::f32::consts::PI * 2.0;
-
-        let mut interval = time::interval(Duration::from_millis(frame_ms as u64));
-        interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+        // Subscribe to the audio fanout
+        let mut audio_rx = audio_fanout.subscribe().await;
 
         loop {
-            interval.tick().await;
+            match audio_rx.recv().await {
+                Ok(opus_sample) => {
+                    // Create WebRTC sample from Opus data
+                    let sample = Sample {
+                        data: opus_sample.data,
+                        duration: opus_sample.duration,
+                        ..Default::default()
+                    };
 
-            let pcm: Vec<f32> = (0..samples_per_frame)
-                .map(|i| {
-                    let t = (phase + i as f32) / sample_rate;
-                    (two_pi * tone_freq * t).sin() * 0.2
-                })
-                .collect();
-            phase = (phase + samples_per_frame as f32) % sample_rate;
-
-            let mut opus_buf = vec![0u8; 4000];
-            let encoded_len = match encoder.encode_float(&pcm, &mut opus_buf) {
-                Ok(n) => n,
-                Err(e) => {
-                    error!("opus encode failed: {:#}", e);
-                    continue;
+                    // Write to WebRTC track
+                    if let Err(e) = track.write_sample(&sample).await {
+                        error!("track write_sample failed: {:#}", e);
+                        break;
+                    }
                 }
-            };
-
-            let sample = Sample {
-                data: opus_buf[..encoded_len].to_vec().into(),
-                duration: Duration::from_millis(frame_ms as u64),
-                ..Default::default()
-            };
-
-            if let Err(e) = track.write_sample(&sample).await {
-                error!("track write_sample failed: {:#}", e);
-                break;
+                Err(e) => {
+                    error!("audio fanout receive error: {:#}", e);
+                    // On broadcast error, try to resubscribe
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    audio_rx = audio_fanout.subscribe().await;
+                }
             }
         }
+
+        // Unsubscribe when done
+        audio_fanout.unsubscribe().await;
+        info!("WebRTC audio track unsubscribed from DoorBird fanout");
     });
 }

@@ -1,3 +1,7 @@
+[workspace]
+members = ["doorbird"]
+resolver = "2"
+
 [package]
 name = "birdbox-rs"
 version = "0.1.0"
@@ -15,3 +19,7 @@ audiopus = "0.2"
 anyhow = "1"
 futures-util = "0.3"
 askama = "0.14"
+doorbird = { path = "doorbird" }
+rubato = "0.16"
+dotenvy = "0.15"
+bytes = "1"

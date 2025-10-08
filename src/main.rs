@@ -4,23 +4,76 @@ use axum::response::Html;
 use axum::{Router, extract::ws::WebSocketUpgrade, response::IntoResponse, routing::get};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+mod audio_fanout;
+mod audio_transcode;
+mod g711;
 mod webrtc;
+
+use audio_fanout::AudioFanout;
 
 #[tokio::main]
 async fn main() {
+    // Load .env file if present (for development)
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // Read DoorBird configuration from environment
+    let doorbird_url =
+        std::env::var("DOORBIRD_URL").expect("DOORBIRD_URL environment variable must be set");
+    let doorbird_user =
+        std::env::var("DOORBIRD_USER").expect("DOORBIRD_USER environment variable must be set");
+    let doorbird_password = std::env::var("DOORBIRD_PASSWORD")
+        .expect("DOORBIRD_PASSWORD environment variable must be set");
+
+    // Create DoorBird client
+    let doorbird_client = doorbird::Client::new(
+        doorbird_url.clone(),
+        doorbird_user.clone(),
+        doorbird_password.clone(),
+    );
+
+    // Fetch and display device information
+    info!("Connecting to DoorBird at {}", doorbird_url);
+    match doorbird_client.info().await {
+        Ok(device_info) => {
+            info!("═══════════════════════════════════════════════");
+            info!("DoorBird Device Information:");
+            info!("  Firmware: {}", device_info.firmware);
+            info!("  Build: {}", device_info.build_number);
+            if let Some(device_type) = &device_info.device_type {
+                info!("  Device Type: {}", device_type);
+            }
+            if let Some(mac) = &device_info.primary_mac_addr {
+                info!("  MAC Address: {}", mac);
+            }
+            if let Some(relays) = &device_info.relays {
+                info!("  Available Relays: {}", relays.join(", "));
+            }
+            info!("═══════════════════════════════════════════════");
+        }
+        Err(e) => {
+            error!("Failed to fetch DoorBird device info: {:#}", e);
+            error!("Continuing anyway, but audio streaming may not work properly");
+        }
+    }
+
+    // Create audio fanout system (buffer 100 samples = ~2 seconds)
+    let audio_fanout = AudioFanout::new(doorbird_client, 100);
+
     let app = Router::new()
         .route("/intercom", get(intercom))
-        .route("/ws", get(ws_handler));
+        .route("/ws", get(ws_handler))
+        .with_state(audio_fanout);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    info!("listening on http://{}", addr);
+    info!("Listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -41,11 +94,14 @@ async fn intercom() -> impl IntoResponse {
     }
 }
 
-async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_socket)
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    axum::extract::State(audio_fanout): axum::extract::State<Arc<AudioFanout>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_socket(socket, audio_fanout))
 }
 
-async fn handle_socket(socket: WebSocket) {
+async fn handle_socket(socket: WebSocket, audio_fanout: Arc<AudioFanout>) {
     let (ws_tx, mut ws_rx) = {
         let (mut sender, receiver) = socket.split();
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
@@ -62,7 +118,7 @@ async fn handle_socket(socket: WebSocket) {
         (out_tx, receiver)
     };
 
-    let session = match webrtc::WebRtcSession::new(ws_tx.clone()).await {
+    let session = match webrtc::WebRtcSession::new(ws_tx.clone(), audio_fanout.clone()).await {
         Ok(s) => s,
         Err(e) => {
             error!("failed to create WebRTC session: {:#}", e);
@@ -80,9 +136,11 @@ async fn handle_socket(socket: WebSocket) {
             }
             Message::Binary(bin) => {
                 if let Ok(txt) = String::from_utf8(bin.to_vec()) {
-                    if let Err(e) = handle_signal_text(&session, &txt).await {
-                        error!("signal handling error: {:#}", e);
-                    }
+                    handle_signal_text(&session, &txt)
+                        .await
+                        .unwrap_or_else(|e| {
+                            error!("signal handling error: {:#}", e);
+                        });
                 }
             }
             Message::Close(_) => break,
