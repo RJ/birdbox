@@ -23,3 +23,4 @@ doorbird = { path = "doorbird" }
 rubato = "0.16"
 dotenvy = "0.15"
 bytes = "1"
+socket2 = "0.5"

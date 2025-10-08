@@ -15,6 +15,13 @@ mod webrtc;
 
 use audio_fanout::AudioFanout;
 
+// Application state shared across all connections
+#[derive(Clone)]
+struct AppState {
+    audio_fanout: Arc<AudioFanout>,
+    webrtc_infra: Arc<webrtc::WebRtcInfra>,
+}
+
 #[tokio::main]
 async fn main() {
     // Load .env file if present (for development)
@@ -67,10 +74,20 @@ async fn main() {
     // Create audio fanout system (buffer 100 samples = ~2 seconds)
     let audio_fanout = AudioFanout::new(doorbird_client, 100);
 
+    // Initialize shared WebRTC infrastructure (UDP mux on port 50000)
+    let webrtc_infra = webrtc::WebRtcInfra::new()
+        .await
+        .expect("Failed to initialize WebRTC infrastructure");
+
+    let state = AppState {
+        audio_fanout,
+        webrtc_infra,
+    };
+
     let app = Router::new()
         .route("/intercom", get(intercom))
         .route("/ws", get(ws_handler))
-        .with_state(audio_fanout);
+        .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     info!("Listening on http://{}", addr);
@@ -96,12 +113,12 @@ async fn intercom() -> impl IntoResponse {
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    axum::extract::State(audio_fanout): axum::extract::State<Arc<AudioFanout>>,
+    axum::extract::State(state): axum::extract::State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, audio_fanout))
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
 }
 
-async fn handle_socket(socket: WebSocket, audio_fanout: Arc<AudioFanout>) {
+async fn handle_socket(socket: WebSocket, state: AppState) {
     let (ws_tx, mut ws_rx) = {
         let (mut sender, receiver) = socket.split();
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
@@ -118,7 +135,13 @@ async fn handle_socket(socket: WebSocket, audio_fanout: Arc<AudioFanout>) {
         (out_tx, receiver)
     };
 
-    let session = match webrtc::WebRtcSession::new(ws_tx.clone(), audio_fanout.clone()).await {
+    let session = match webrtc::WebRtcSession::new(
+        state.webrtc_infra.clone(),
+        ws_tx.clone(),
+        state.audio_fanout.clone(),
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             error!("failed to create WebRTC session: {:#}", e);
@@ -146,6 +169,12 @@ async fn handle_socket(socket: WebSocket, audio_fanout: Arc<AudioFanout>) {
             Message::Close(_) => break,
             Message::Ping(_) | Message::Pong(_) => {}
         }
+    }
+
+    // Clean up WebRTC connection when WebSocket closes
+    info!("WebSocket closed, cleaning up WebRTC session");
+    if let Err(e) = session.pc.close().await {
+        error!("Error closing peer connection: {:#}", e);
     }
 }
 

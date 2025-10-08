@@ -32,6 +32,12 @@ Successfully integrated DoorBird smart doorbell audio streaming into the WebRTC 
 - Replaced tone generator with DoorBird audio consumer
 - Each WebRTC session subscribes to the audio fanout
 - Automatic cleanup when session ends
+- **ICE Candidate Control** for proper network interface selection:
+  - Binds UDP socket to specific IP (not 0.0.0.0) to force single interface usage
+  - Auto-detects LAN IP when HOST_IP not set (native deployment)
+  - Falls back to 0.0.0.0 with NAT 1:1 mapping (Docker deployment)
+  - Disables mDNS to prevent `.local` candidates
+  - Ensures only the correct IP address is used for WebRTC connections
 
 ### 5. Main Application Updates (`src/main.rs`)
 - Reads environment variables: `DOORBIRD_URL`, `DOORBIRD_USER`, `DOORBIRD_PASSWORD`
@@ -141,3 +147,66 @@ If future requirements demand lower latency, consider:
    - New latency: ~2-5ms resampler delay
 
 **Recommendation:** Keep current settings. The 50ms latency is imperceptible for voice communication and ensures high-quality audio resampling with proper buffering to prevent Opus encoding errors.
+
+## Network Configuration & ICE Candidate Selection
+
+### Problem: Multiple Network Interfaces
+
+When running natively (not in Docker), WebRTC can gather ICE candidates from all network interfaces:
+- Localhost (127.0.0.1)
+- LAN IP (e.g., 10.0.0.154)
+- VPN interfaces
+- mDNS `.local` hostnames
+
+This causes connection issues when clients try to connect via the wrong interface.
+
+### Solution: Three-Layer ICE Control
+
+**Location:** `src/webrtc.rs`, lines 84-126
+
+1. **Specific IP Binding** (Primary Fix)
+   - Binds UDP socket to specific IP: `10.0.0.154:50000` instead of `0.0.0.0:50000`
+   - Forces OS to only use that network interface for UDP traffic
+   - Automatically prevents localhost, VPN, and other interface candidates
+   ```rust
+   let udp_socket = UdpSocket::bind(&format!("{}:{}", host_ip, udp_port)).await?;
+   ```
+
+2. **mDNS Disable**
+   - Prevents `.local` hostname candidates
+   - `setting_engine.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled)`
+   - Only active when specific IP is set
+
+3. **NAT 1:1 Mapping**
+   - Advertises external IP for Docker deployments
+   - Container binds to 0.0.0.0 but advertises host's external IP
+   - `setting_engine.set_nat_1to1_ips(vec![host_ip], ...)`
+
+### Auto-Detection & Fallback
+
+**Native Deployment** (no HOST_IP set):
+- Auto-detects LAN IP using UDP socket trick (connects to 8.8.8.8 to determine routing interface)
+- Binds directly to detected IP
+- Logs: `"Auto-detected local IP: 10.0.0.X"`
+
+**Docker Deployment** (HOST_IP set to external IP):
+- Attempts to bind to HOST_IP
+- If fails (container doesn't have that IP), falls back to 0.0.0.0 with NAT 1:1 mapping
+- Logs: `"Could not bind to X.X.X.X, binding to 0.0.0.0 instead (Docker mode)"`
+
+### Result
+
+**Before:** Multiple candidates from all interfaces, clients may connect to wrong one
+```
+candidate: 127.0.0.1 ... typ host
+candidate: 10.0.0.154 ... typ host
+candidate: d8e0adbe...local ... typ host
+candidate: (VPN) ... typ host
+```
+
+**After:** Single candidate with correct IP only
+```
+candidate: 10.0.0.154 50000 typ host
+```
+
+This ensures reliable WebRTC connections on both native and Docker deployments.
