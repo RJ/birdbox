@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}Intercom - Birdbox{% endblock %}
+
+{% block body %}
+<h1 class="mb-4">Intercom</h1>
+<div class="d-flex align-items-center gap-3 mb-3">
+    <span id="status" class="badge text-bg-secondary">Idle</span>
+    <button id="connectBtn" class="btn btn-primary btn-sm">Connect</button>
+</div>
+<p class="text-muted">Open the console to see detailed WebRTC logs (candidates, states).</p>
+<audio id="audio" autoplay playsinline></audio>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const log = (...args) => console.log('[webrtc]', ...args);
+    const statusEl = document.getElementById('status');
+    const audioEl = document.getElementById('audio');
+    const connectBtn = document.getElementById('connectBtn');
+
+    function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = 'badge ' + (cls || 'text-bg-secondary');
+    }
+
+    async function connect() {
+        setStatus('Connecting', 'text-bg-warning');
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        // Ensure the offer contains an audio m-line for receiving server audio
+        try {
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+        } catch (e) {
+            log('addTransceiver failed (older browser?)', e);
+        }
+
+        pc.onicecandidate = (e) => {
+            if (e.candidate) {
+                log('local ICE candidate:', {
+                    candidate: e.candidate.candidate,
+                    sdpMid: e.candidate.sdpMid,
+                    sdpMLineIndex: e.candidate.sdpMLineIndex,
+                    type: e.candidate.type,
+                    protocol: e.candidate.protocol,
+                    address: e.candidate.address,
+                    port: e.candidate.port
+                });
+                socket.send(JSON.stringify({
+                    type: 'candidate',
+                    candidate: e.candidate.candidate,
+                    sdpMid: e.candidate.sdpMid,
+                    sdpMLineIndex: e.candidate.sdpMLineIndex
+                }));
+            } else {
+                log('✓ ICE candidate gathering complete');
+            }
+        };
+        pc.onicegatheringstatechange = () => {
+            log('ICE gathering state changed:', pc.iceGatheringState);
+        };
+        pc.onsignalingstatechange = () => {
+            log('signaling state changed:', pc.signalingState);
+        };
+        pc.oniceconnectionstatechange = () => {
+            log('ICE connection state changed:', pc.iceConnectionState);
+            switch (pc.iceConnectionState) {
+                case 'connected':
+                    setStatus('Connected', 'text-bg-success');
+                    log('✓ ICE connection established');
+                    break;
+                case 'disconnected':
+                    setStatus('Disconnected', 'text-bg-danger');
+                    log('⚠ ICE connection disconnected');
+                    break;
+                case 'failed':
+                    setStatus('Failed', 'text-bg-danger');
+                    log('✗ ICE connection failed');
+                    break;
+                case 'checking':
+                    setStatus('Checking', 'text-bg-warning');
+                    log('⋯ ICE checking connectivity...');
+                    break;
+                case 'new':
+                    log('ICE state: new');
+                    break;
+                case 'completed':
+                    log('✓ ICE connection completed');
+                    break;
+                case 'closed':
+                    log('ICE connection closed');
+                    break;
+            }
+        };
+        pc.onconnectionstatechange = () => {
+            log('peer connection state changed:', pc.connectionState);
+        };
+        pc.ontrack = (e) => {
+            log('remote track received', e.streams[0]);
+            audioEl.srcObject = e.streams[0];
+        };
+
+        const socket = new WebSocket(`ws://${location.host}/ws`);
+        socket.onopen = async () => {
+            log('✓ WebSocket connected');
+            const offer = await pc.createOffer();
+            log('created offer, setting local description...');
+            await pc.setLocalDescription(offer);
+            log('sending offer to server');
+            socket.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+        };
+        socket.onmessage = async (ev) => {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'answer') {
+                log('✓ received answer from server');
+                await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+                log('remote description set');
+            } else if (msg.type === 'candidate') {
+                log('remote ICE candidate:', {
+                    candidate: msg.candidate,
+                    sdpMid: msg.sdpMid,
+                    sdpMLineIndex: msg.sdpMLineIndex
+                });
+                try {
+                    await pc.addIceCandidate({
+                        candidate: msg.candidate,
+                        sdpMid: msg.sdpMid ?? null,
+                        sdpMLineIndex: msg.sdpMLineIndex ?? null,
+                    });
+                    log('✓ remote candidate added');
+                } catch (e) {
+                    console.error('✗ addIceCandidate failed:', e);
+                }
+            }
+        };
+        socket.onclose = () => {
+            log('✗ WebSocket closed');
+            setStatus('Disconnected', 'text-bg-danger');
+        };
+        socket.onerror = (e) => {
+            console.error('✗ WebSocket error:', e);
+            setStatus('Error', 'text-bg-danger');
+        };
+    }
+
+    connectBtn.addEventListener('click', connect);
+</script>
+{% endblock %}
