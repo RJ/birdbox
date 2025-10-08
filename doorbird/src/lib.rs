@@ -65,6 +65,17 @@ pub struct Client {
     client: reqwest::Client,
 }
 
+/// Video quality/resolution options for RTSP streaming
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoQuality {
+    /// Default resolution (device-specific)
+    Default,
+    /// 720p resolution (supported by D10x/D21x devices)
+    P720,
+    /// 1080p resolution (supported by D11x devices)
+    P1080,
+}
+
 /// Device information returned from the `/bha-api/info.cgi` endpoint.
 ///
 /// Contains firmware version, build number, MAC address, and available relays.
@@ -90,6 +101,65 @@ pub struct DeviceInfo {
     /// Device type string (e.g., "DoorBird D101")
     #[serde(rename = "DEVICE-TYPE")]
     pub device_type: Option<String>,
+}
+
+impl DeviceInfo {
+    /// Returns `true` if the device supports 1080p video resolution.
+    ///
+    /// This is determined by checking if the device type contains "D11".
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use doorbird::DeviceInfo;
+    /// let info = DeviceInfo {
+    ///     firmware: "000109".to_string(),
+    ///     build_number: "15120529".to_string(),
+    ///     primary_mac_addr: None,
+    ///     relays: None,
+    ///     device_type: Some("DoorBird D1101".to_string()),
+    /// };
+    /// assert!(info.supports_1080p());
+    /// ```
+    pub fn supports_1080p(&self) -> bool {
+        self.device_type
+            .as_ref()
+            .map(|dt| dt.to_uppercase().contains("D11"))
+            .unwrap_or(false)
+    }
+
+    /// Returns `true` if the device supports 720p video resolution.
+    ///
+    /// This is determined by checking if the device supports 1080p (which implies 720p),
+    /// or if the device type contains "D10" or "D21".
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use doorbird::DeviceInfo;
+    /// let info = DeviceInfo {
+    ///     firmware: "000109".to_string(),
+    ///     build_number: "15120529".to_string(),
+    ///     primary_mac_addr: None,
+    ///     relays: None,
+    ///     device_type: Some("DoorBird D1001".to_string()),
+    /// };
+    /// assert!(info.supports_720p());
+    /// ```
+    pub fn supports_720p(&self) -> bool {
+        // 1080p implies 720p
+        if self.supports_1080p() {
+            return true;
+        }
+
+        self.device_type
+            .as_ref()
+            .map(|dt| {
+                let dt_upper = dt.to_uppercase();
+                dt_upper.contains("D10") || dt_upper.contains("D21")
+            })
+            .unwrap_or(false)
+    }
 }
 
 /// Response wrapper for the info endpoint
@@ -343,6 +413,125 @@ impl Client {
                 Another client may already be transmitting.",
                 status
             )
+        }
+    }
+
+    /// Returns an RTSP URL for streaming live video from the DoorBird device.
+    ///
+    /// **API Endpoint:** RTSP streaming on port 8557 (RTSP-over-HTTP)
+    ///
+    /// **Required Permission:** Valid user with "watch always" permission or
+    /// ring event in the past 5 minutes
+    ///
+    /// **Video Format:** H.264 encoded video at up to 12fps. Resolution depends
+    /// on the quality parameter:
+    /// - `VideoQuality::Default`: Device default resolution
+    /// - `VideoQuality::P720`: 720p (supported by D10x/D21x and higher)
+    /// - `VideoQuality::P1080`: 1080p (supported by D11x only)
+    ///
+    /// **Note:** The video connection can be interrupted at any time if the official
+    /// DoorBird app requests the stream, as it has precedence over LAN API users.
+    ///
+    /// # Arguments
+    ///
+    /// * `quality` - Desired video quality/resolution
+    ///
+    /// # Returns
+    ///
+    /// RTSP URL string with embedded credentials in format:
+    /// `rtsp://username:password@ip:8557/mpeg/[quality]/media.amp`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use doorbird::{Client, VideoQuality};
+    /// # let client = Client::new("http://192.168.1.100".into(), "user".into(), "pass".into());
+    /// let rtsp_url = client.video_receive(VideoQuality::P1080);
+    /// println!("RTSP URL: {}", rtsp_url);
+    /// ```
+    pub fn video_receive(&self, quality: VideoQuality) -> String {
+        // Extract IP address from base_url (strip http:// or https://)
+        let ip = self
+            .base_url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+
+        // Determine path based on quality
+        let path = match quality {
+            VideoQuality::Default => "mpeg/media.amp",
+            VideoQuality::P720 => "mpeg/720p/media.amp",
+            VideoQuality::P1080 => "mpeg/1080p/media.amp",
+        };
+
+        // Build RTSP URL with embedded credentials
+        format!(
+            "rtsp://{}:{}@{}:8557/{}",
+            self.username, self.password, ip, path
+        )
+    }
+
+    /// Opens a door/gate by triggering a relay on the DoorBird device.
+    ///
+    /// **API Endpoint:** `GET /bha-api/open-door.cgi`
+    ///
+    /// **Required Permission:** Valid user with "watch always" permission or
+    /// ring event in the past 5 minutes
+    ///
+    /// Energizes the door opener/alarm output relay of the device. The API assumes
+    /// that the user watches the live image in order to open the door or trigger relays.
+    ///
+    /// # Arguments
+    ///
+    /// * `relay` - Optional relay identifier (e.g., "1", "2", "gggaaa@1" for paired
+    ///   DoorController). If `None`, defaults to physical relay 1.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or an error if the request fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use doorbird::Client;
+    /// # async fn example() -> anyhow::Result<()> {
+    /// # let client = Client::new("http://192.168.1.100".into(), "user".into(), "pass".into());
+    /// // Trigger default relay (relay 1)
+    /// client.open_door(None).await?;
+    ///
+    /// // Trigger specific relay
+    /// client.open_door(Some("2")).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn open_door(&self, relay: Option<&str>) -> Result<()> {
+        let mut url = format!("{}/bha-api/open-door.cgi", self.base_url);
+
+        // Add relay parameter if specified
+        if let Some(r) = relay {
+            url.push_str(&format!("?r={}", r));
+        }
+
+        debug!("Opening door/gate via {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .context("Failed to send open door request")?;
+
+        let status = response.status();
+        if status.is_success() {
+            info!("Door/gate opened successfully");
+            Ok(())
+        } else if status.as_u16() == 204 {
+            anyhow::bail!(
+                "Open door request rejected: no permission (204 No Content). \
+                User may not have 'watch always' permission or no recent ring event."
+            )
+        } else {
+            anyhow::bail!("Open door request failed with status: {}", status)
         }
     }
 }

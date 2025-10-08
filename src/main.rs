@@ -5,16 +5,19 @@ use axum::{Router, extract::ws::WebSocketUpgrade, response::IntoResponse, routin
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 mod audio_fanout;
 mod audio_transcode;
 mod g711;
+mod h264_extractor;
+mod video_fanout;
 mod webrtc;
 
 use audio_fanout::AudioFanout;
+use video_fanout::VideoFanout;
 
 /// Push-to-talk state tracking
 struct PttState {
@@ -47,16 +50,19 @@ impl PttState {
         if active.is_none() {
             *active = Some(session_id);
             info!("PTT acquired by session {}", session_id);
-            
+
             // Broadcast state change
             let _ = self.state_tx.send(PttStateMessage {
                 transmitting: true,
                 session_id: Some(session_id),
             });
-            
+
             true
         } else {
-            warn!("PTT denied for session {} - already in use by {:?}", session_id, *active);
+            warn!(
+                "PTT denied for session {} - already in use by {:?}",
+                session_id, *active
+            );
             false
         }
     }
@@ -67,7 +73,7 @@ impl PttState {
         if *active == Some(session_id) {
             *active = None;
             info!("PTT released by session {}", session_id);
-            
+
             // Broadcast state change
             let _ = self.state_tx.send(PttStateMessage {
                 transmitting: false,
@@ -92,6 +98,7 @@ impl PttState {
 #[derive(Clone)]
 struct AppState {
     audio_fanout: Arc<AudioFanout>,
+    video_fanout: Arc<VideoFanout>,
     webrtc_infra: Arc<webrtc::WebRtcInfra>,
     ptt_state: Arc<PttState>,
     doorbird_client: doorbird::Client,
@@ -100,7 +107,9 @@ struct AppState {
 #[tokio::main]
 async fn main() {
     // Load .env file if present (for development)
-    let _ = dotenvy::dotenv();
+    if dotenvy::dotenv().is_ok() {
+        info!("Loaded .env file");
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -114,6 +123,13 @@ async fn main() {
     let doorbird_password = std::env::var("DOORBIRD_PASSWORD")
         .expect("DOORBIRD_PASSWORD environment variable must be set");
 
+    // Read video configuration from environment
+    let video_buffer_frames = std::env::var("VIDEO_FANOUT_BUFFER_FRAMES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(4); // Default to 4 frames if not set or invalid
+    info!("Video fanout buffer size: {} frames", video_buffer_frames);
+
     // Create DoorBird client
     let doorbird_client = doorbird::Client::new(
         doorbird_url.clone(),
@@ -123,7 +139,7 @@ async fn main() {
 
     // Fetch and display device information
     info!("Connecting to DoorBird at {}", doorbird_url);
-    match doorbird_client.info().await {
+    let device_info = match doorbird_client.info().await {
         Ok(device_info) => {
             info!("═══════════════════════════════════════════════");
             info!("DoorBird Device Information:");
@@ -139,15 +155,50 @@ async fn main() {
                 info!("  Available Relays: {}", relays.join(", "));
             }
             info!("═══════════════════════════════════════════════");
+            Some(device_info)
         }
         Err(e) => {
             error!("Failed to fetch DoorBird device info: {:#}", e);
-            error!("Continuing anyway, but audio streaming may not work properly");
+            error!("Continuing anyway, but features may be limited");
+            None
         }
-    }
+    };
 
-    // Create audio fanout system (buffer 100 samples = ~2 seconds)
-    let audio_fanout = AudioFanout::new(doorbird_client.clone(), 100);
+    // Determine video quality based on device capabilities
+    let video_quality = if let Some(ref info) = device_info {
+        if info.supports_1080p() {
+            info!("Device supports 1080p video");
+            doorbird::VideoQuality::P1080
+        } else if info.supports_720p() {
+            info!("Device supports 720p video");
+            doorbird::VideoQuality::P720
+        } else {
+            info!("Using default video resolution");
+            doorbird::VideoQuality::Default
+        }
+    } else {
+        info!("Using default video resolution (device info unavailable)");
+        doorbird::VideoQuality::Default
+    };
+
+    // Get RTSP URL for video streaming
+    let rtsp_url = doorbird_client.video_receive(video_quality);
+    info!("RTSP URL configured for video streaming");
+
+    // Create audio fanout system with configurable buffer size
+    let audio_buffer_samples = std::env::var("AUDIO_FANOUT_BUFFER_SAMPLES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(20); // Default to 20 samples (~400ms) if not set or invalid
+    info!(
+        "Audio fanout buffer size: {} samples (~{}ms)",
+        audio_buffer_samples,
+        audio_buffer_samples * 20
+    );
+    let audio_fanout = AudioFanout::new(doorbird_client.clone(), audio_buffer_samples);
+
+    // Create video fanout system with configurable buffer size
+    let video_fanout = VideoFanout::new(rtsp_url, video_buffer_frames);
 
     // Initialize shared WebRTC infrastructure (UDP mux on port 50000)
     let webrtc_infra = webrtc::WebRtcInfra::new()
@@ -159,6 +210,7 @@ async fn main() {
 
     let state = AppState {
         audio_fanout,
+        video_fanout,
         webrtc_infra,
         ptt_state,
         doorbird_client,
@@ -167,6 +219,7 @@ async fn main() {
     let app = Router::new()
         .route("/intercom", get(intercom))
         .route("/ws", get(ws_handler))
+        .route("/api/open-gates", axum::routing::post(open_gates))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
@@ -188,6 +241,27 @@ async fn intercom() -> impl IntoResponse {
             format!("Template error: {}", err),
         )
             .into_response(),
+    }
+}
+
+async fn open_gates(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> impl IntoResponse {
+    match state.doorbird_client.open_door(None).await {
+        Ok(_) => Html(
+            r#"<div class="alert alert-success alert-dismissible fade show" role="alert">
+                Gates opened successfully!
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>"#
+                .to_string(),
+        ),
+        Err(e) => Html(format!(
+            r#"<div class="alert alert-danger alert-dismissible fade show" role="alert">
+                    Failed to open gates: {}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>"#,
+            e
+        )),
     }
 }
 
@@ -222,7 +296,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Subscribe to PTT state changes
     let mut ptt_state_rx = state.ptt_state.subscribe();
     let ws_tx_for_ptt = ws_tx.clone();
-    
+
     // Spawn task to forward PTT state changes to this client
     let ptt_forward_task = tokio::spawn(async move {
         while let Ok(ptt_msg) = ptt_state_rx.recv().await {
@@ -238,6 +312,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
         state.webrtc_infra.clone(),
         ws_tx.clone(),
         state.audio_fanout.clone(),
+        state.video_fanout.clone(),
         state.ptt_state.clone(),
         state.doorbird_client.clone(),
         session_id,
@@ -283,13 +358,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     // Clean up WebRTC connection when WebSocket closes
     info!("WebSocket closed, cleaning up session {}", session_id);
-    
+
     // Release PTT if this session had it
     state.ptt_state.release(session_id).await;
-    
+
     // Stop PTT forward task
     ptt_forward_task.abort();
-    
+
     if let Err(e) = session.pc.close().await {
         error!("Error closing peer connection: {:#}", e);
     }

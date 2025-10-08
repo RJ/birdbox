@@ -2,37 +2,181 @@
 
 {% block title %}Intercom - Birdbox{% endblock %}
 
+{% block head %}
+<style>
+    /* Full viewport layout */
+    .intercom-container {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        margin: 0;
+        padding: 0;
+    }
+
+    /* Video container fills remaining space */
+    .video-container {
+        flex-grow: 1;
+        background-color: #000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }
+
+    /* Video maintains aspect ratio while filling container */
+    #videoFeed {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+    }
+
+    /* Button container below video */
+    .button-container {
+        background-color: #000;
+        padding: 12px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    /* Buttons stack vertically with same width */
+    .button-container .btn {
+        width: 100%;
+        padding: 12px 16px;
+        font-size: 1rem;
+        font-weight: 500;
+    }
+
+    /* Fixed status bar at bottom - single line */
+    .status-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        width: 100%;
+        height: 44px;
+        background-color: #f8f9fa;
+        border-top: 2px solid #dee2e6;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 20px;
+        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+        z-index: 1000;
+    }
+
+    /* Connection status on the left */
+    .connection-status {
+        font-weight: 600;
+        font-size: 0.95rem;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* Ad-hoc status message on the right */
+    .status-message {
+        font-size: 0.85rem;
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* Reserve space for fixed status bar */
+    .button-container {
+        padding-bottom: 44px;
+    }
+
+    /* Responsive adjustments for smaller screens */
+    @media (max-width: 576px) {
+        .status-bar {
+            padding: 0 16px;
+            height: 40px;
+        }
+
+        .button-container {
+            padding: 10px 12px 40px 12px;
+            gap: 8px;
+        }
+
+        .button-container .btn {
+            padding: 10px 14px;
+            font-size: 0.95rem;
+        }
+
+        .connection-status {
+            font-size: 0.875rem;
+        }
+
+        .status-message {
+            font-size: 0.8rem;
+        }
+    }
+
+    /* Hide base template container padding for full-screen layout */
+    body.p-4 {
+        padding: 0 !important;
+    }
+
+    body .container {
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 100% !important;
+    }
+</style>
+{% endblock %}
+
 {% block body %}
-<h1 class="mb-4">Intercom</h1>
-<div class="d-flex align-items-center gap-3 mb-3">
-    <span id="status" class="badge text-bg-secondary">Idle</span>
-    <button id="connectBtn" class="btn btn-primary btn-sm">Connect</button>
+<div class="intercom-container">
+    <!-- Video fills remaining space -->
+    <div class="video-container">
+        <video id="videoFeed" autoplay playsinline muted></video>
+    </div>
+
+    <!-- Button container below video -->
+    <div class="button-container">
+        <button id="openGatesBtn" class="btn btn-warning" hx-post="/api/open-gates" hx-swap="none">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                class="bi bi-door-open-fill" viewBox="0 0 16 16">
+                <path
+                    d="M1.5 15a.5.5 0 0 0 0 1h13a.5.5 0 0 0 0-1H13V2.5A1.5 1.5 0 0 0 11.5 1H11V.5a.5.5 0 0 0-.57-.495l-7 1A.5.5 0 0 0 3 1.5V15zM11 2h.5a.5.5 0 0 1 .5.5V15h-1zm-2.5 8c-.276 0-.5-.448-.5-1s.224-1 .5-1 .5.448.5 1-.224 1-.5 1" />
+            </svg>
+            Open Gates
+        </button>
+
+        <button id="transmitBtn" class="btn btn-secondary" disabled>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                class="bi bi-mic-fill" viewBox="0 0 16 16">
+                <path d="M5 3a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z" />
+                <path
+                    d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5" />
+            </svg>
+            <span id="transmitText">Transmit</span>
+        </button>
+    </div>
+
+    <!-- Fixed status bar at bottom -->
+    <div class="status-bar">
+        <div id="connectionStatus" class="connection-status text-secondary">
+            Connecting...
+        </div>
+        <div id="statusMessage" class="status-message"></div>
+    </div>
 </div>
-<div class="mb-3">
-    <button id="transmitBtn" class="btn btn-success" disabled>
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-mic-fill"
-            viewBox="0 0 16 16">
-            <path d="M5 3a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z" />
-            <path
-                d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5" />
-        </svg>
-        <span id="transmitText">Start Transmitting</span>
-    </button>
-    <small class="text-muted" id="transmitStatus"></small>
-</div>
-<p class="text-muted">Open the console to see detailed WebRTC logs (candidates, states).</p>
+
+<!-- Audio element for doorbell audio -->
 <audio id="audio" autoplay playsinline></audio>
 {% endblock %}
 
 {% block scripts %}
 <script>
     const log = (...args) => console.log('[webrtc]', ...args);
-    const statusEl = document.getElementById('status');
+    const connectionStatusEl = document.getElementById('connectionStatus');
+    const statusMessageEl = document.getElementById('statusMessage');
     const audioEl = document.getElementById('audio');
-    const connectBtn = document.getElementById('connectBtn');
     const transmitBtn = document.getElementById('transmitBtn');
     const transmitText = document.getElementById('transmitText');
-    const transmitStatus = document.getElementById('transmitStatus');
 
     let pc = null;
     let socket = null;
@@ -40,35 +184,36 @@
     let isTransmitting = false;
     let othersTransmitting = false;
 
-    function setStatus(text, cls) {
-        statusEl.textContent = text;
-        statusEl.className = 'badge ' + (cls || 'text-bg-secondary');
+    function setConnectionStatus(text, colorClass) {
+        connectionStatusEl.textContent = text;
+        connectionStatusEl.className = 'connection-status ' + (colorClass || 'text-secondary');
+    }
+
+    function setStatusMessage(text, colorClass) {
+        statusMessageEl.textContent = text;
+        statusMessageEl.className = 'status-message ' + (colorClass || 'text-muted');
     }
 
     function updateTransmitButton() {
         if (!pc || pc.connectionState !== 'connected') {
             transmitBtn.disabled = true;
             transmitBtn.className = 'btn btn-secondary';
-            transmitText.textContent = 'Start Transmitting';
-            transmitStatus.textContent = '';
+            transmitText.textContent = 'Transmit';
             return;
         }
 
         if (othersTransmitting) {
             transmitBtn.disabled = true;
             transmitBtn.className = 'btn btn-warning';
-            transmitText.textContent = 'Start Transmitting';
-            transmitStatus.textContent = 'Line busy';
+            transmitText.textContent = 'Line Busy';
         } else if (isTransmitting) {
             transmitBtn.disabled = false;
             transmitBtn.className = 'btn btn-danger';
-            transmitText.textContent = 'Stop Transmitting';
-            transmitStatus.textContent = 'Transmitting...';
+            transmitText.textContent = 'Stop';
         } else {
             transmitBtn.disabled = false;
             transmitBtn.className = 'btn btn-success';
-            transmitText.textContent = 'Start Transmitting';
-            transmitStatus.textContent = '';
+            transmitText.textContent = 'Transmit';
         }
     }
 
@@ -170,14 +315,15 @@
     transmitBtn.addEventListener('click', toggleTransmit);
 
     async function connect() {
-        setStatus('Connecting', 'text-bg-warning');
+        setConnectionStatus('Connecting...', 'text-warning');
         pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
 
-        // Ensure the offer contains an audio m-line for receiving server audio
+        // Ensure the offer contains media m-lines for receiving server audio and video
         try {
             pc.addTransceiver('audio', { direction: 'recvonly' });
+            pc.addTransceiver('video', { direction: 'recvonly' });
         } catch (e) {
             log('addTransceiver failed (older browser?)', e);
         }
@@ -213,19 +359,19 @@
             log('ICE connection state changed:', pc.iceConnectionState);
             switch (pc.iceConnectionState) {
                 case 'connected':
-                    setStatus('Connected', 'text-bg-success');
+                    setConnectionStatus('Connected', 'text-success');
                     log('✓ ICE connection established');
                     break;
                 case 'disconnected':
-                    setStatus('Disconnected', 'text-bg-danger');
+                    setConnectionStatus('Disconnected', 'text-danger');
                     log('⚠ ICE connection disconnected');
                     break;
                 case 'failed':
-                    setStatus('Failed', 'text-bg-danger');
+                    setConnectionStatus('Failed', 'text-danger');
                     log('✗ ICE connection failed');
                     break;
                 case 'checking':
-                    setStatus('Checking', 'text-bg-warning');
+                    setConnectionStatus('Checking...', 'text-warning');
                     log('⋯ ICE checking connectivity...');
                     break;
                 case 'new':
@@ -235,6 +381,7 @@
                     log('✓ ICE connection completed');
                     break;
                 case 'closed':
+                    setConnectionStatus('Closed', 'text-secondary');
                     log('ICE connection closed');
                     break;
             }
@@ -245,8 +392,12 @@
             updateTransmitButton();
         };
         pc.ontrack = (e) => {
-            log('remote track received', e.streams[0]);
-            audioEl.srcObject = e.streams[0];
+            log('remote track received', e.track.kind, e.streams[0]);
+            if (e.track.kind === 'audio') {
+                audioEl.srcObject = e.streams[0];
+            } else if (e.track.kind === 'video') {
+                document.getElementById('videoFeed').srcObject = e.streams[0];
+            }
         };
 
         socket = new WebSocket(`ws://${location.host}/ws`);
@@ -297,14 +448,6 @@
                         pc.removeTrack(sender);
                     }
                 }
-
-                // Show "Line busy" message
-                transmitStatus.textContent = 'Line busy - try again later';
-                setTimeout(() => {
-                    if (!isTransmitting) {
-                        transmitStatus.textContent = '';
-                    }
-                }, 3000);
             } else if (msg.type === 'ptt_state') {
                 log('Transmission state update:', msg.transmitting);
                 // If someone started transmitting and it's not us, set othersTransmitting
@@ -319,14 +462,41 @@
         };
         socket.onclose = () => {
             log('✗ WebSocket closed');
-            setStatus('Disconnected', 'text-bg-danger');
+            setConnectionStatus('Disconnected', 'text-danger');
         };
         socket.onerror = (e) => {
             console.error('✗ WebSocket error:', e);
-            setStatus('Error', 'text-bg-danger');
+            setConnectionStatus('Error', 'text-danger');
         };
     }
 
-    connectBtn.addEventListener('click', connect);
+    // Auto-connect on page load
+    document.addEventListener('DOMContentLoaded', () => {
+        log('Auto-connecting to intercom...');
+        connect();
+    });
+
+    // Handle gates button response
+    document.getElementById('openGatesBtn').addEventListener('htmx:afterRequest', function (evt) {
+        if (evt.detail.successful) {
+            // Success response
+            setStatusMessage('Opened Gates', 'text-success');
+            setTimeout(() => {
+                setStatusMessage('', 'text-muted');
+            }, 5000);
+        } else {
+            // Error response
+            let errorMsg = 'Unknown error';
+            if (evt.detail.xhr && evt.detail.xhr.responseText) {
+                errorMsg = evt.detail.xhr.responseText;
+            } else if (!evt.detail.xhr) {
+                errorMsg = 'Network error';
+            }
+            setStatusMessage('Opening gates Failed: ' + errorMsg, 'text-danger');
+            setTimeout(() => {
+                setStatusMessage('', 'text-muted');
+            }, 5000);
+        }
+    });
 </script>
 {% endblock %}

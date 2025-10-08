@@ -148,6 +148,134 @@ If future requirements demand lower latency, consider:
 
 **Recommendation:** Keep current settings. The 50ms latency is imperceptible for voice communication and ensures high-quality audio resampling with proper buffering to prevent Opus encoding errors.
 
+### Audio Buffering Latency
+
+**Default Configuration: 20 samples (~400ms)**
+
+The audio fanout buffer is **significantly more impactful** than video for perceived latency in intercom use, as it directly affects two-way communication responsiveness.
+
+#### Buffer Configuration
+
+**Location:** `src/main.rs`, lines 188-198
+
+The buffer size is configurable via the `AUDIO_FANOUT_BUFFER_SAMPLES` environment variable:
+
+```bash
+# Each sample is 20ms (50Hz Opus frame rate)
+AUDIO_FANOUT_BUFFER_SAMPLES=20  # Default: 400ms latency
+```
+
+**Previous Default:** 100 samples (2000ms = 2 seconds)
+- Caused noticeable echo/delay in two-way conversations
+- Made intercom feel unnatural and slow
+
+**New Default:** 20 samples (400ms)
+- Balances latency with reliability
+- Acceptable for intercom use without feeling sluggish
+- Still provides reasonable resilience to processing hiccups
+
+#### Buffer Size Trade-offs
+
+| Setting     | Latency | Characteristics                             |
+| ----------- | ------- | ------------------------------------------- |
+| 10 samples  | 200ms   | Minimum latency, risk of dropouts/crackling |
+| 20 samples  | 400ms   | **Default** - Good balance for intercom     |
+| 30 samples  | 600ms   | Higher reliability, noticeable delay        |
+| 50 samples  | 1000ms  | Smooth but echo-like delay                  |
+| 100 samples | 2000ms  | Previous default - too high for intercom    |
+
+#### Failure Modes with Low Buffer
+
+If buffer is too small (e.g., 5-10 samples):
+- **Slow subscriber:** WebRTC client can't consume audio fast enough → audio gaps/crackling
+- **CPU spikes:** Brief processing delays cause buffer underrun → dropouts
+- **Network jitter:** DoorBird audio stream delays momentarily → gaps in playback
+
+**Symptoms:** Choppy audio, crackling, intermittent dropouts, robotic voice quality
+
+#### Tuning Recommendations
+
+**For Minimum Latency** (competitive intercom feel):
+```bash
+AUDIO_FANOUT_BUFFER_SAMPLES=10  # 200ms
+```
+- Risk: May crackle on slower devices or under CPU load
+- Best for: Powerful servers, low-latency priority
+
+**For Maximum Reliability** (smooth audio, less critical latency):
+```bash
+AUDIO_FANOUT_BUFFER_SAMPLES=30  # 600ms
+```
+- Benefits: Very smooth, resilient to temporary issues
+- Trade-off: Noticeable delay in conversation flow
+
+**Recommendation:** Default of 20 samples (400ms) provides good balance for intercom applications. This is 5x lower latency than the original implementation while maintaining reliability. Adjust based on your hardware performance and latency tolerance.
+
+### Video Pipeline Latency
+
+**Total End-to-End Latency: ~500ms-1s**
+
+The video pipeline uses **raw H.264 packet forwarding** (no transcoding) with aggressive low-latency optimizations:
+
+#### Optimizations Implemented
+
+1. **RTSP Input Configuration** (Location: `src/h264_extractor.rs`, lines 60-64)
+   - `rtsp_transport = "tcp"` - Reliable delivery over local network
+   - `fflags = "nobuffer"` - Disables ffmpeg's internal buffering
+   - `flags = "low_delay"` - Enables low delay mode
+   - `max_delay = "0"` - Minimizes decoder-level delay
+   - These flags eliminate ~1-2 seconds of buffering at the RTSP source
+
+2. **Fixed Sample Duration** (Location: `src/webrtc.rs`, line 632)
+   - Uses fixed 83ms duration (~12fps) instead of accumulated timestamps
+   - Prevents timestamp drift from adding latency
+   - WebRTC handles actual timing, we just forward packets immediately
+
+3. **Minimal Buffer Size** (Location: `src/main.rs`, lines 125-190)
+   - Video fanout buffer: **Configurable via `VIDEO_FANOUT_BUFFER_FRAMES` env var**
+   - Default: **4 frames** (~330ms @ 12fps)
+   - Previous default was 30 frames (~2.5 seconds)
+   - Trade-off: Lower buffer = lower latency but more frame drops under load
+   - See `env.example` for tuning guidance
+
+#### Latency Breakdown
+
+**Before Optimizations: ~2-3 seconds**
+- RTSP buffering: ~1-2s
+- Fanout buffer: ~2.5s
+- Network transit: ~100ms
+
+**After Optimizations: ~450ms-900ms**
+- RTSP buffering: ~100ms (nobuffer flags)
+- Fanout buffer: ~330ms (4 frames @ 12fps, configurable)
+- Network transit: ~100ms
+- WebRTC jitter buffer: ~0-200ms (adaptive)
+
+#### Further Latency Reduction Options
+
+If lower latency is required, adjust `VIDEO_FANOUT_BUFFER_FRAMES` in `.env`:
+
+1. **Reduce Buffer to 3 Frames** (`VIDEO_FANOUT_BUFFER_FRAMES=3`):
+   - New buffer latency: ~250ms @ 12fps
+   - Total latency: ~400-800ms
+   - Trade-off: More frame drops under load, occasional stuttering
+
+2. **Reduce Buffer to 1 Frame** (`VIDEO_FANOUT_BUFFER_FRAMES=1`):
+   - New buffer latency: ~83ms @ 12fps
+   - Total latency: ~300-600ms
+   - Trade-off: Frequent frame drops, choppy video, only for minimum latency scenarios
+
+3. **UDP Transport** (uncomment line in `src/h264_extractor.rs`):
+   - Change `"tcp"` to `"udp"` on line 61
+   - Saves ~10-20ms in transport overhead
+   - Trade-off: Less reliable, may have packet loss over WiFi
+
+4. **Request Higher Frame Rate** (if device supports it):
+   - DoorBird API supports up to 15fps on some models
+   - Lower per-frame latency accumulation
+
+**Recommendation:** Default of 4 frames provides good balance between latency (~450ms-900ms) and reliability. This is acceptable for doorbell/security applications where reliability is more critical than real-time interaction. Adjust `VIDEO_FANOUT_BUFFER_FRAMES` based on your network quality and latency requirements.
+
 ## Network Configuration & ICE Candidate Selection
 
 ### Problem: Multiple Network Interfaces

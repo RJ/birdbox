@@ -1,5 +1,6 @@
 use crate::audio_fanout::AudioFanout;
 use crate::audio_transcode::ReverseAudioTranscoder;
+use crate::video_fanout::VideoFanout;
 use anyhow::Result;
 use axum::extract::ws::Message;
 use bytes::Bytes;
@@ -8,11 +9,11 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, mpsc::UnboundedSender};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 use webrtc::api::API;
 use webrtc::api::APIBuilder;
-use webrtc::api::media_engine::{MIME_TYPE_OPUS, MediaEngine};
+use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine};
 use webrtc::ice::udp_mux::*;
 use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
@@ -161,7 +162,7 @@ impl WebRtcInfra {
                 let ip_str = ip.to_string();
                 let allowed = ip_str == filter_ip;
                 if !allowed {
-                    info!(
+                    debug!(
                         "Filtered out ICE candidate IP: {} (only allowing {})",
                         ip_str, filter_ip
                     );
@@ -212,6 +213,7 @@ impl WebRtcSession {
         infra: Arc<WebRtcInfra>,
         ws_out: UnboundedSender<Message>,
         audio_fanout: Arc<AudioFanout>,
+        video_fanout: Arc<VideoFanout>,
         ptt_state: Arc<crate::PttState>,
         doorbird_client: doorbird::Client,
         session_id: Uuid,
@@ -365,6 +367,42 @@ impl WebRtcSession {
 
         // Start audio streaming from DoorBird fanout
         start_audio_stream_task(track.clone(), audio_fanout);
+
+        // Prepare video track (H.264) for sending to client
+        let video_track = Arc::new(TrackLocalStaticSample::new(
+            webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_H264.to_string(),
+                clock_rate: 90000, // Standard for H.264
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                        .to_string(),
+                rtcp_feedback: vec![],
+            },
+            "video".to_string(),
+            "doorbird-video".to_string(),
+        ));
+
+        let video_sender = pc
+            .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
+            .await?;
+
+        // Read RTCP for video track in background
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 1500];
+            loop {
+                match video_sender.read(&mut buf).await {
+                    Ok(_) => {}
+                    Err(err) => {
+                        error!("video rtcp read error: {:#}", err);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Start video streaming from DoorBird fanout
+        start_video_stream_task(video_track.clone(), video_fanout);
 
         Ok(Self {
             pc,
@@ -573,5 +611,45 @@ fn start_audio_stream_task(track: Arc<TrackLocalStaticSample>, audio_fanout: Arc
         // Unsubscribe when done
         audio_fanout.unsubscribe().await;
         info!("WebRTC audio track unsubscribed from DoorBird fanout");
+    });
+}
+
+fn start_video_stream_task(track: Arc<TrackLocalStaticSample>, video_fanout: Arc<VideoFanout>) {
+    tokio::spawn(async move {
+        info!("WebRTC video track subscribed to DoorBird fanout");
+
+        // Subscribe to the video fanout
+        let mut video_rx = video_fanout.subscribe().await;
+
+        loop {
+            match video_rx.recv().await {
+                Ok(h264_packet) => {
+                    // Create WebRTC sample from H.264 packet
+                    // Use a fixed duration for low latency - DoorBird typically streams at 10-12 fps
+                    // Using 83ms (~12fps) as duration, actual timing handled by WebRTC
+                    let sample = Sample {
+                        data: h264_packet.data,
+                        duration: std::time::Duration::from_millis(83),
+                        ..Default::default()
+                    };
+
+                    // Write to WebRTC track immediately
+                    if let Err(e) = track.write_sample(&sample).await {
+                        error!("video track write_sample failed: {:#}", e);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("video fanout receive error: {:#}", e);
+                    // On broadcast error, try to resubscribe
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    video_rx = video_fanout.subscribe().await;
+                }
+            }
+        }
+
+        // Unsubscribe when done
+        video_fanout.unsubscribe().await;
+        info!("WebRTC video track unsubscribed from DoorBird fanout");
     });
 }
