@@ -528,7 +528,9 @@
             }
         };
 
-        socket = new WebSocket(`ws://${location.host}/ws`);
+        // Use wss:// for HTTPS, ws:// for HTTP
+        const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        socket = new WebSocket(`${wsProtocol}//${location.host}/ws`);
         socket.onopen = async () => {
             log('✓ WebSocket connected');
             const offer = await pc.createOffer();
