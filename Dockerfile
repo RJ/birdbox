@@ -3,6 +3,16 @@ FROM rust:1.90-bookworm as builder
 
 WORKDIR /usr/src/birdbox-rs
 
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y \
+    clang \
+    libclang-dev \
+    llvm-dev \
+    pkg-config \
+    libopus-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
 

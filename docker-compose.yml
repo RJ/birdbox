@@ -1,9 +1,26 @@
 services:
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: caddy
+    ports:
+      - "8443:443"
+      - "8443:443/udp"
+    environment:
+      - GANDI_API_TOKEN=${GANDI_API_TOKEN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    depends_on:
+      - birdbox
+
   birdbox:
     build: .
     container_name: birdbox-rs
     ports:
-      - "3000:3000"
       # Single UDP port for WebRTC media (using UDP mux)
       - "50000:50000/udp"
     env_file:
@@ -12,4 +29,8 @@ services:
       # Mount templates for easy updates without rebuild
       - ./templates:/app/templates:ro
     restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
 

@@ -15,7 +15,7 @@
 //! 4. Encode to G.711 μ-law
 
 use anyhow::{Context, Result};
-use audiopus::{Application, Channels, SampleRate, coder::Encoder, coder::Decoder};
+use audiopus::{Application, Channels, SampleRate, coder::Decoder, coder::Encoder};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };

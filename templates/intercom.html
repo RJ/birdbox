@@ -45,6 +45,41 @@
         z-index: 10;
     }
 
+    /* Audio prompt overlay at top center */
+    .audio-prompt {
+        position: absolute;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: rgba(0, 0, 0, 0.85);
+        color: #fff;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        font-weight: 500;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        z-index: 20;
+        display: none;
+        animation: fadeIn 0.3s ease-in;
+        cursor: pointer;
+    }
+
+    .audio-prompt.visible {
+        display: block;
+    }
+
+    @keyframes fadeIn {
+        from {
+            opacity: 0;
+            transform: translateX(-50%) translateY(-10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    }
+
     /* Button container below video */
     .button-container {
         background-color: #000;
@@ -108,6 +143,12 @@
             font-size: 0.75rem;
             bottom: 6px;
         }
+
+        .audio-prompt {
+            top: 12px;
+            padding: 10px 20px;
+            font-size: 0.9rem;
+        }
     }
 
     /* Hide base template container padding for full-screen layout */
@@ -128,6 +169,7 @@
     <!-- Video fills remaining space -->
     <div class="video-container">
         <video id="videoFeed" autoplay playsinline muted></video>
+        <div id="audioPrompt" class="audio-prompt">👆 Touch to start audio</div>
         <div id="connectionStatus" class="status-text">Connecting...</div>
     </div>
 
@@ -165,11 +207,36 @@
 <script>
     const log = (...args) => console.log('[webrtc]', ...args);
     const connectionStatusEl = document.getElementById('connectionStatus');
+    const audioPromptEl = document.getElementById('audioPrompt');
     const audioEl = document.getElementById('audio');
     const transmitBtn = document.getElementById('transmitBtn');
     const transmitText = document.getElementById('transmitText');
     const openGatesBtn = document.getElementById('openGatesBtn');
     const gatesStatusIcon = document.getElementById('gatesStatusIcon');
+
+    // Detect PWA mode
+    const isPWA = window.matchMedia('(display-mode: standalone)').matches ||
+        window.matchMedia('(display-mode: fullscreen)').matches ||
+        window.navigator.standalone === true ||
+        document.referrer.includes('android-app://');
+
+    log('Running in PWA mode:', isPWA);
+    if (!isPWA) {
+        log('⚠️  Not running as installed PWA - address bar will be visible');
+        log('Install from Share menu → "Add to Home Screen" for full-screen experience');
+    } else {
+        log('✅ Running as installed PWA - full-screen mode');
+    }
+
+    // Check secure context for microphone access
+    if (!window.isSecureContext) {
+        console.warn('⚠️  Not running in secure context (HTTPS/localhost)');
+        console.warn('⚠️  Microphone access will be blocked');
+        console.warn(`   Current: ${window.location.protocol}//${window.location.hostname}`);
+        console.warn('   Solution: Use HTTPS or localhost for microphone features');
+    } else {
+        log('✅ Secure context - microphone access available');
+    }
 
     let pc = null;
     let socket = null;
@@ -240,6 +307,23 @@
 
     async function startTransmitting() {
         if (isTransmitting || othersTransmitting) return;
+
+        // Check if we're in a secure context (HTTPS or localhost)
+        if (!window.isSecureContext) {
+            const protocol = window.location.protocol;
+            const hostname = window.location.hostname;
+            console.error('Microphone access denied: not in secure context');
+            alert(
+                '🔒 Microphone Access Blocked\n\n' +
+                'Microphone access requires HTTPS or localhost.\n\n' +
+                `Current: ${protocol}//${hostname}\n\n` +
+                'To fix:\n' +
+                '• Access via https:// instead of http://\n' +
+                '• Or use localhost/127.0.0.1 for testing\n' +
+                '• Configure a reverse proxy with SSL certificate'
+            );
+            return;
+        }
 
         log('Starting transmission...');
 
@@ -416,6 +500,29 @@
             log('remote track received', e.track.kind, e.streams[0]);
             if (e.track.kind === 'audio') {
                 audioEl.srcObject = e.streams[0];
+                // Explicitly try to play audio (handle autoplay policy)
+                audioEl.play().then(() => {
+                    log('✓ Audio autoplay succeeded');
+                }).catch(err => {
+                    log('Audio autoplay blocked, showing prompt:', err.message);
+                    // Show the "Touch to start audio" message
+                    audioPromptEl.classList.add('visible');
+
+                    // Set up one-time click handler to enable audio
+                    const enableAudio = () => {
+                        audioEl.play().then(() => {
+                            log('✓ Audio playback started after user interaction');
+                            audioPromptEl.classList.remove('visible');
+                        }).catch(e => {
+                            log('Audio play failed:', e);
+                        });
+                    };
+
+                    // Listen for any click on the document
+                    document.addEventListener('click', enableAudio, { once: true });
+                    // Also make the prompt itself clickable
+                    audioPromptEl.addEventListener('click', enableAudio, { once: true });
+                });
             } else if (e.track.kind === 'video') {
                 document.getElementById('videoFeed').srcObject = e.streams[0];
             }

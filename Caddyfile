@@ -1,0 +1,8 @@
+gates.edmund.house {
+    reverse_proxy birdbox:3000
+    tls {
+        dns gandi {env.GANDI_API_TOKEN}
+        resolvers 8.8.8.8
+    }
+}
+

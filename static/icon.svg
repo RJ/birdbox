@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Black background -->
+  <rect width="512" height="512" fill="#000000"/>
+  
+  <!-- Door icon in white -->
+  <g fill="#ffffff">
+    <!-- Door frame -->
+    <rect x="156" y="96" width="200" height="320" rx="8" fill="none" stroke="#ffffff" stroke-width="16"/>
+    
+    <!-- Door panel -->
+    <rect x="176" y="116" width="160" height="280" rx="4" fill="#333333"/>
+    
+    <!-- Door handle -->
+    <circle cx="280" cy="256" r="12" fill="#ffffff"/>
+    
+    <!-- Speaker grille (top) -->
+    <line x1="196" y1="146" x2="316" y2="146" stroke="#666666" stroke-width="3"/>
+    <line x1="196" y1="156" x2="316" y2="156" stroke="#666666" stroke-width="3"/>
+    <line x1="196" y1="166" x2="316" y2="166" stroke="#666666" stroke-width="3"/>
+    
+    <!-- Camera lens -->
+    <circle cx="256" cy="206" r="24" fill="#444444" stroke="#ffffff" stroke-width="3"/>
+    <circle cx="256" cy="206" r="12" fill="#666666"/>
+    
+    <!-- Microphone grille (bottom) -->
+    <line x1="196" y1="366" x2="316" y2="366" stroke="#666666" stroke-width="3"/>
+    <line x1="196" y1="376" x2="316" y2="376" stroke="#666666" stroke-width="3"/>
+    <line x1="196" y1="386" x2="316" y2="386" stroke="#666666" stroke-width="3"/>
+  </g>
+</svg>
+

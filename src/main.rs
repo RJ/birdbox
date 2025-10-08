@@ -6,6 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, mpsc};
+use tower_http::services::ServeDir;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -220,6 +221,7 @@ async fn main() {
         .route("/intercom", get(intercom))
         .route("/ws", get(ws_handler))
         .route("/api/open-gates", axum::routing::post(open_gates))
+        .nest_service("/static", ServeDir::new("static"))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
