@@ -314,6 +314,7 @@ impl Client {
             .client
             .get(&url)
             .basic_auth(&self.username, Some(&self.password))
+            .timeout(std::time::Duration::from_secs(3600)) // 1 hour timeout for streaming
             .send()
             .await
             .context("Failed to send audio receive request")?;

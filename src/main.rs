@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, mpsc};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 mod audio_fanout;
@@ -408,7 +408,7 @@ async fn handle_signal_text(
                 .get("sdpMLineIndex")
                 .and_then(|i| i.as_u64())
                 .map(|u| u as u16);
-            info!(
+            debug!(
                 "received client ICE candidate: {} (mid: {:?}, mline: {:?})",
                 candidate, sdp_mid, sdp_mline_index
             );

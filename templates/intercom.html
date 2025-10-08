@@ -21,6 +21,7 @@
         align-items: center;
         justify-content: center;
         overflow: hidden;
+        position: relative;
     }
 
     /* Video maintains aspect ratio while filling container */
@@ -30,87 +31,82 @@
         object-fit: contain;
     }
 
+    /* Status text overlay at bottom of video */
+    .status-text {
+        position: absolute;
+        bottom: 8px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 0.8rem;
+        color: rgba(255, 255, 255, 0.7);
+        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: 10;
+    }
+
     /* Button container below video */
     .button-container {
         background-color: #000;
-        padding: 12px 16px;
+        padding: 16px 20px 20px 20px;
         display: flex;
-        flex-direction: column;
-        gap: 10px;
+        flex-direction: row;
+        gap: 12px;
+        justify-content: center;
     }
 
-    /* Buttons stack vertically with same width */
-    .button-container .btn {
+    /* Button wrapper for max-width constraint */
+    .button-wrapper {
+        display: flex;
+        flex-direction: row;
+        gap: 12px;
         width: 100%;
-        padding: 12px 16px;
+        max-width: 600px;
+    }
+
+    /* Buttons in horizontal row, equal width */
+    .button-container .btn {
+        flex: 1;
+        padding: 14px 20px;
         font-size: 1rem;
         font-weight: 500;
+        position: relative;
     }
 
-    /* Fixed status bar at bottom - single line */
-    .status-bar {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        width: 100%;
-        height: 44px;
-        background-color: #f8f9fa;
-        border-top: 2px solid #dee2e6;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0 20px;
-        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
-        z-index: 1000;
+    /* Button status indicators */
+    .btn-status-icon {
+        display: inline-block;
+        margin-left: 8px;
+        width: 16px;
+        height: 16px;
+        vertical-align: middle;
     }
 
-    /* Connection status on the left */
-    .connection-status {
-        font-weight: 600;
-        font-size: 0.95rem;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    /* Ad-hoc status message on the right */
-    .status-message {
-        font-size: 0.85rem;
-        text-align: right;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-
-    /* Reserve space for fixed status bar */
-    .button-container {
-        padding-bottom: 44px;
+    .spinner-border-sm-custom {
+        width: 16px;
+        height: 16px;
+        border-width: 2px;
     }
 
     /* Responsive adjustments for smaller screens */
     @media (max-width: 576px) {
-        .status-bar {
-            padding: 0 16px;
-            height: 40px;
+        .button-container {
+            padding: 14px 16px 16px 16px;
+            gap: 10px;
         }
 
-        .button-container {
-            padding: 10px 12px 40px 12px;
-            gap: 8px;
+        .button-wrapper {
+            gap: 10px;
         }
 
         .button-container .btn {
-            padding: 10px 14px;
+            padding: 12px 16px;
             font-size: 0.95rem;
         }
 
-        .connection-status {
-            font-size: 0.875rem;
-        }
-
-        .status-message {
-            font-size: 0.8rem;
+        .status-text {
+            font-size: 0.75rem;
+            bottom: 6px;
         }
     }
 
@@ -132,36 +128,32 @@
     <!-- Video fills remaining space -->
     <div class="video-container">
         <video id="videoFeed" autoplay playsinline muted></video>
+        <div id="connectionStatus" class="status-text">Connecting...</div>
     </div>
 
     <!-- Button container below video -->
     <div class="button-container">
-        <button id="openGatesBtn" class="btn btn-warning" hx-post="/api/open-gates" hx-swap="none">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
-                class="bi bi-door-open-fill" viewBox="0 0 16 16">
-                <path
-                    d="M1.5 15a.5.5 0 0 0 0 1h13a.5.5 0 0 0 0-1H13V2.5A1.5 1.5 0 0 0 11.5 1H11V.5a.5.5 0 0 0-.57-.495l-7 1A.5.5 0 0 0 3 1.5V15zM11 2h.5a.5.5 0 0 1 .5.5V15h-1zm-2.5 8c-.276 0-.5-.448-.5-1s.224-1 .5-1 .5.448.5 1-.224 1-.5 1" />
-            </svg>
-            Open Gates
-        </button>
+        <div class="button-wrapper">
+            <button id="openGatesBtn" class="btn btn-warning" hx-post="/api/open-gates" hx-swap="none">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                    class="bi bi-door-open-fill" viewBox="0 0 16 16">
+                    <path
+                        d="M1.5 15a.5.5 0 0 0 0 1h13a.5.5 0 0 0 0-1H13V2.5A1.5 1.5 0 0 0 11.5 1H11V.5a.5.5 0 0 0-.57-.495l-7 1A.5.5 0 0 0 3 1.5V15zM11 2h.5a.5.5 0 0 1 .5.5V15h-1zm-2.5 8c-.276 0-.5-.448-.5-1s.224-1 .5-1 .5.448.5 1-.224 1-.5 1" />
+                </svg>
+                <span id="openGatesText">Open Gates</span>
+                <span id="gatesStatusIcon" class="btn-status-icon"></span>
+            </button>
 
-        <button id="transmitBtn" class="btn btn-secondary" disabled>
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
-                class="bi bi-mic-fill" viewBox="0 0 16 16">
-                <path d="M5 3a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z" />
-                <path
-                    d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5" />
-            </svg>
-            <span id="transmitText">Transmit</span>
-        </button>
-    </div>
-
-    <!-- Fixed status bar at bottom -->
-    <div class="status-bar">
-        <div id="connectionStatus" class="connection-status text-secondary">
-            Connecting...
+            <button id="transmitBtn" class="btn btn-secondary" disabled>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                    class="bi bi-mic-fill" viewBox="0 0 16 16">
+                    <path d="M5 3a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z" />
+                    <path
+                        d="M3.5 6.5A.5.5 0 0 1 4 7v1a4 4 0 0 0 8 0V7a.5.5 0 0 1 1 0v1a5 5 0 0 1-4.5 4.975V15h3a.5.5 0 0 1 0 1h-7a.5.5 0 0 1 0-1h3v-2.025A5 5 0 0 1 3 8V7a.5.5 0 0 1 .5-.5" />
+                </svg>
+                <span id="transmitText">Transmit</span>
+            </button>
         </div>
-        <div id="statusMessage" class="status-message"></div>
     </div>
 </div>
 
@@ -173,10 +165,11 @@
 <script>
     const log = (...args) => console.log('[webrtc]', ...args);
     const connectionStatusEl = document.getElementById('connectionStatus');
-    const statusMessageEl = document.getElementById('statusMessage');
     const audioEl = document.getElementById('audio');
     const transmitBtn = document.getElementById('transmitBtn');
     const transmitText = document.getElementById('transmitText');
+    const openGatesBtn = document.getElementById('openGatesBtn');
+    const gatesStatusIcon = document.getElementById('gatesStatusIcon');
 
     let pc = null;
     let socket = null;
@@ -184,14 +177,42 @@
     let isTransmitting = false;
     let othersTransmitting = false;
 
-    function setConnectionStatus(text, colorClass) {
+    function setConnectionStatus(text) {
         connectionStatusEl.textContent = text;
-        connectionStatusEl.className = 'connection-status ' + (colorClass || 'text-secondary');
     }
 
-    function setStatusMessage(text, colorClass) {
-        statusMessageEl.textContent = text;
-        statusMessageEl.className = 'status-message ' + (colorClass || 'text-muted');
+    function setGatesButtonStatus(status) {
+        // status can be: 'loading', 'success', 'error', or null (clear)
+        gatesStatusIcon.innerHTML = '';
+
+        if (status === 'loading') {
+            // Show spinner
+            gatesStatusIcon.innerHTML = '<span class="spinner-border spinner-border-sm-custom" role="status" aria-hidden="true"></span>';
+            openGatesBtn.disabled = true;
+        } else if (status === 'success') {
+            // Show checkmark
+            gatesStatusIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check-circle-fill" viewBox="0 0 16 16">
+                <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0m-3.97-3.03a.75.75 0 0 0-1.08.022L7.477 9.417 5.384 7.323a.75.75 0 0 0-1.06 1.06L6.97 11.03a.75.75 0 0 0 1.079-.02l3.992-4.99a.75.75 0 0 0-.01-1.05z"/>
+            </svg>`;
+            openGatesBtn.disabled = true;
+            // Clear after 2 seconds
+            setTimeout(() => {
+                setGatesButtonStatus(null);
+            }, 2000);
+        } else if (status === 'error') {
+            // Show X
+            gatesStatusIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-x-circle-fill" viewBox="0 0 16 16">
+                <path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0M5.354 4.646a.5.5 0 1 0-.708.708L7.293 8l-2.647 2.646a.5.5 0 0 0 .708.708L8 8.707l2.646 2.647a.5.5 0 0 0 .708-.708L8.707 8l2.647-2.646a.5.5 0 0 0-.708-.708L8 7.293z"/>
+            </svg>`;
+            openGatesBtn.disabled = true;
+            // Clear after 2 seconds
+            setTimeout(() => {
+                setGatesButtonStatus(null);
+            }, 2000);
+        } else {
+            // Clear/null - re-enable button
+            openGatesBtn.disabled = false;
+        }
     }
 
     function updateTransmitButton() {
@@ -315,7 +336,7 @@
     transmitBtn.addEventListener('click', toggleTransmit);
 
     async function connect() {
-        setConnectionStatus('Connecting...', 'text-warning');
+        setConnectionStatus('Connecting...');
         pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
@@ -359,19 +380,19 @@
             log('ICE connection state changed:', pc.iceConnectionState);
             switch (pc.iceConnectionState) {
                 case 'connected':
-                    setConnectionStatus('Connected', 'text-success');
+                    setConnectionStatus('Connected');
                     log('✓ ICE connection established');
                     break;
                 case 'disconnected':
-                    setConnectionStatus('Disconnected', 'text-danger');
+                    setConnectionStatus('Disconnected');
                     log('⚠ ICE connection disconnected');
                     break;
                 case 'failed':
-                    setConnectionStatus('Failed', 'text-danger');
+                    setConnectionStatus('Failed');
                     log('✗ ICE connection failed');
                     break;
                 case 'checking':
-                    setConnectionStatus('Checking...', 'text-warning');
+                    setConnectionStatus('Checking...');
                     log('⋯ ICE checking connectivity...');
                     break;
                 case 'new':
@@ -381,7 +402,7 @@
                     log('✓ ICE connection completed');
                     break;
                 case 'closed':
-                    setConnectionStatus('Closed', 'text-secondary');
+                    setConnectionStatus('Closed');
                     log('ICE connection closed');
                     break;
             }
@@ -462,11 +483,11 @@
         };
         socket.onclose = () => {
             log('✗ WebSocket closed');
-            setConnectionStatus('Disconnected', 'text-danger');
+            setConnectionStatus('Disconnected');
         };
         socket.onerror = (e) => {
             console.error('✗ WebSocket error:', e);
-            setConnectionStatus('Error', 'text-danger');
+            setConnectionStatus('Error');
         };
     }
 
@@ -476,26 +497,18 @@
         connect();
     });
 
-    // Handle gates button response
-    document.getElementById('openGatesBtn').addEventListener('htmx:afterRequest', function (evt) {
+    // Handle gates button with HTMX events
+    openGatesBtn.addEventListener('htmx:beforeRequest', function (evt) {
+        setGatesButtonStatus('loading');
+    });
+
+    openGatesBtn.addEventListener('htmx:afterRequest', function (evt) {
         if (evt.detail.successful) {
             // Success response
-            setStatusMessage('Opened Gates', 'text-success');
-            setTimeout(() => {
-                setStatusMessage('', 'text-muted');
-            }, 5000);
+            setGatesButtonStatus('success');
         } else {
             // Error response
-            let errorMsg = 'Unknown error';
-            if (evt.detail.xhr && evt.detail.xhr.responseText) {
-                errorMsg = evt.detail.xhr.responseText;
-            } else if (!evt.detail.xhr) {
-                errorMsg = 'Network error';
-            }
-            setStatusMessage('Opening gates Failed: ' + errorMsg, 'text-danger');
-            setTimeout(() => {
-                setStatusMessage('', 'text-muted');
-            }, 5000);
+            setGatesButtonStatus('error');
         }
     });
 </script>
