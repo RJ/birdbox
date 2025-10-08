@@ -1,0 +1,30 @@
+# Build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+
+# CI/CD
+.github
+
+# macOS
+.DS_Store
+

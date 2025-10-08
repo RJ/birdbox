@@ -1,11 +1,14 @@
 use anyhow::Result;
 use axum::extract::ws::Message;
 use std::sync::Arc;
+use tokio::net::UdpSocket;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{self, Duration};
 use tracing::{error, info};
 use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::{MIME_TYPE_OPUS, MediaEngine};
+use webrtc::ice::udp_mux::*;
+use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
@@ -29,9 +32,32 @@ impl WebRtcSession {
         m.register_default_codecs()?;
 
         let registry = Registry::new();
+
+        // Configure NAT 1:1 mapping and UDP mux for Docker deployment
+        let mut setting_engine = webrtc::api::setting_engine::SettingEngine::default();
+
+        // Use UDP mux to multiplex all WebRTC traffic over a single UDP port
+        let udp_port = std::env::var("UDP_PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(50000);
+        info!("Configuring UDP mux on port {}", udp_port);
+        let udp_socket = UdpSocket::bind(("0.0.0.0", udp_port)).await?;
+        let udp_mux = UDPMuxDefault::new(UDPMuxParams::new(udp_socket));
+        setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
+
+        if let Ok(host_ip) = std::env::var("HOST_IP") {
+            info!("Configuring NAT 1:1 mapping with HOST_IP={}", host_ip);
+            setting_engine.set_nat_1to1_ips(
+                vec![host_ip],
+                webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
+            );
+        }
+
         let api = APIBuilder::new()
             .with_media_engine(m)
             .with_interceptor_registry(registry)
+            .with_setting_engine(setting_engine)
             .build();
 
         let cfg = RTCConfiguration {
