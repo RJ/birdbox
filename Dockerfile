@@ -10,6 +10,7 @@ RUN apt-get update && \
     libclang-dev \
     llvm-dev \
     pkg-config \
+    nasm \
     libopus-dev \
     && rm -rf /var/lib/apt/lists/*
 
