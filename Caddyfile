@@ -1,8 +1,9 @@
-gates.edmund.house {
+rjms.grouse-eagle.ts.net {
     reverse_proxy birdbox:3000
-    tls {
-        dns gandi {env.GANDI_API_TOKEN}
-        resolvers 8.8.8.8
-    }
+    tls /ssl/cert.pem /ssl/key.pem
+    #tls {
+    #    dns gandi {env.GANDI_API_TOKEN}
+    #    resolvers 8.8.8.8
+    #}
 }
 

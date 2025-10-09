@@ -276,6 +276,129 @@ If lower latency is required, adjust `VIDEO_FANOUT_BUFFER_FRAMES` in `.env`:
 
 **Recommendation:** Default of 4 frames provides good balance between latency (~450ms-900ms) and reliability. This is acceptable for doorbell/security applications where reliability is more critical than real-time interaction. Adjust `VIDEO_FANOUT_BUFFER_FRAMES` based on your network quality and latency requirements.
 
+## WebRTC Network Topology & Connection Architecture
+
+### Deployment Architecture
+
+This application uses a **client-server WebRTC architecture**, not peer-to-peer:
+
+```
+Browser Client ←→ WebRTC Server (Rust) ←→ DoorBird Device
+    (LAN)         (same host as web UI)        (LAN)
+```
+
+**Key characteristics:**
+- **Server-authoritative**: The Rust application acts as a WebRTC server endpoint
+- **Co-located with web server**: WebRTC server runs on the same machine serving the web UI
+- **Fixed UDP port**: Uses predictable port (default: 50000) for all WebRTC traffic  
+- **Direct LAN connectivity**: No NAT traversal needed between client and server on same network
+
+### Connection Flow
+
+1. **Initial Contact**: Browser loads `/intercom` page from web server over HTTP
+2. **WebSocket Handshake**: Client establishes WebSocket connection for signaling
+3. **SDP Exchange**: 
+   - Client sends WebRTC offer with its capabilities
+   - Server responds with answer containing audio/video tracks and ICE candidates
+4. **ICE Candidate Exchange**:
+   - Server advertises single host candidate (its configured IP + UDP port)
+   - Client sends its candidates (server uses them to send media back)
+5. **Media Flow**: Direct UDP connection established for audio/video streaming
+
+### Why STUN/TURN Servers Are NOT Needed
+
+**STUN servers** help peers discover their public IP addresses when behind NAT. We don't need this because:
+
+1. **Server has known address**: The server IP is explicitly configured via `HOST_IP` environment variable or auto-detected
+2. **Same host as web server**: If the browser can reach `http://HOST_IP/intercom`, it can reach `udp://HOST_IP:50000`
+3. **Client-server model**: We're not doing P2P between two browsers behind different NATs
+4. **Explicit ICE candidates**: Server advertises its specific IP address via NAT 1:1 mapping
+5. **Fixed port mapping**: UDP port is predictable and accessible (mapped through Docker if needed)
+
+**TURN servers** provide media relay when direct connection fails. We don't need this because:
+- LAN clients connect directly to server on same network
+- No firewall/NAT between browser and server (both on LAN)
+- If client can't reach the UDP port, a TURN relay wouldn't help (same network issue)
+- TURN adds latency and bandwidth costs for no benefit in our topology
+
+**Bottom line**: The WebRTC connection uses the same IP and network path as the web page itself, just over UDP instead of TCP. No discovery or relay needed.
+
+### Docker Compose on macOS Considerations
+
+**Platform**: macOS with Docker Desktop + Docker Compose
+
+Docker on macOS runs Linux containers in a VM (HyperKit/QEMU), which adds networking layers:
+
+#### Networking Layers
+```
+Browser (LAN) → macOS Host → Docker VM → Linux Container (Rust app)
+10.0.0.X        10.0.0.154    172.x.x.x    172.y.y.y
+```
+
+#### Challenges
+
+1. **Port Forwarding Complexity**:
+   - TCP ports (HTTP/WebSocket) forward automatically through Docker's proxy
+   - UDP port 50000 requires explicit mapping in `docker-compose.yml`
+   - Traffic path: LAN → macOS → VM → Container
+
+2. **IP Address Confusion**:
+   - Container sees its internal Docker IP (172.x.x.x)
+   - macOS host has LAN IP (e.g., 10.0.0.154)
+   - Browser needs to connect to LAN IP, not container IP
+   - Must use `HOST_IP` environment variable to advertise correct external IP
+
+3. **Bind Address Limitation**:
+   - Container cannot bind directly to `HOST_IP` (doesn't own that interface)
+   - Must bind to `0.0.0.0` inside container
+   - Use NAT 1:1 mapping to advertise external IP in ICE candidates
+
+#### Our Solution
+
+**Location**: `src/webrtc.rs`, lines 115-136
+
+1. Container binds to `0.0.0.0:50000` (listens on all container interfaces)
+2. `HOST_IP` environment variable set to macOS LAN IP (e.g., 10.0.0.154)
+3. WebRTC NAT 1:1 mapping advertises `HOST_IP` in ICE candidates
+4. Docker's port mapping forwards `HOST_IP:50000` → container's `0.0.0.0:50000`
+5. Browser connects to `10.0.0.154:50000`, Docker routes to container
+
+**Why this works without STUN**:
+- We explicitly tell WebRTC what IP to advertise (no discovery needed)
+- Docker's built-in port mapping handles the NAT traversal
+- From browser's perspective: connecting to LAN IP, same as web server
+- From container's perspective: receives traffic on 0.0.0.0, no awareness of NAT
+
+#### Docker Compose UDP Mapping
+
+**Required in `docker-compose.yml`**:
+```yaml
+ports:
+  - "8080:8080"           # HTTP/WebSocket (TCP)
+  - "50000:50000/udp"     # WebRTC media (UDP) - explicit /udp required!
+```
+
+Note: The `/udp` suffix is critical. Without it, Docker only maps TCP.
+
+#### macOS-Specific Gotchas
+
+- **Docker Desktop networking**: Uses vpnkit or socket_vmnet, can have quirks
+- **Firewall rules**: macOS firewall may block UDP; check System Preferences → Security
+- **Wi-Fi vs Ethernet**: Different interfaces may have different firewall rules
+- **VPN interference**: Active VPNs can complicate routing, prefer direct LAN
+
+### Network Verification
+
+**If the browser can successfully:**
+- Load the web page at `http://HOST_IP:PORT/intercom`
+- Establish WebSocket connection for signaling
+
+**Then it will also be able to:**
+- Reach WebRTC endpoint at `udp://HOST_IP:50000`
+- Stream audio/video without STUN
+
+The WebRTC connection is **no more complex** than the HTTP connection - it's just UDP instead of TCP to the same host. The application explicitly controls which IP is advertised, making STUN's discovery mechanism unnecessary.
+
 ## Network Configuration & ICE Candidate Selection
 
 ### Problem: Multiple Network Interfaces

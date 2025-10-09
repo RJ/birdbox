@@ -36,6 +36,7 @@ struct FanoutState {
 /// to multiple subscribers (WebRTC clients).
 pub struct VideoFanout {
     rtsp_url: String,
+    rtsp_transport: String,
     broadcast_tx: broadcast::Sender<H264Packet>,
     state: Arc<RwLock<FanoutState>>,
 }
@@ -46,11 +47,13 @@ impl VideoFanout {
     /// # Arguments
     /// * `rtsp_url` - RTSP URL with embedded credentials
     /// * `buffer_size` - Size of the broadcast buffer (number of frames to buffer)
-    pub fn new(rtsp_url: String, buffer_size: usize) -> Arc<Self> {
+    /// * `rtsp_transport` - Transport protocol: "tcp" or "udp"
+    pub fn new(rtsp_url: String, buffer_size: usize, rtsp_transport: &str) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(buffer_size);
 
         let fanout = Arc::new(Self {
             rtsp_url,
+            rtsp_transport: rtsp_transport.to_string(),
             broadcast_tx,
             state: Arc::new(RwLock::new(FanoutState {
                 connection_state: ConnectionState::Disconnected,
@@ -162,13 +165,14 @@ impl VideoFanout {
     /// Stream video from DoorBird and broadcast to subscribers
     async fn stream_video(&self) -> Result<()> {
         let rtsp_url = self.rtsp_url.clone();
+        let rtsp_transport = self.rtsp_transport.clone();
         let broadcast_tx = self.broadcast_tx.clone();
         let state_clone = Arc::clone(&self.state);
 
         // Run packet extraction in a spawn_blocking task to avoid Send issues
         let handle = tokio::task::spawn_blocking(move || {
             // Create extractor (this establishes RTSP connection)
-            let mut extractor = match H264Extractor::new(rtsp_url) {
+            let mut extractor = match H264Extractor::new(rtsp_url, &rtsp_transport) {
                 Ok(e) => e,
                 Err(e) => {
                     error!("Failed to create H.264 extractor: {:#}", e);

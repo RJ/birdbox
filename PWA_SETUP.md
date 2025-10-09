@@ -62,3 +62,4 @@ After installing, launch the app from your home screen and connect. You should s
 
 Enjoy your dedicated intercom app! 🎉
 
+

@@ -7,9 +7,8 @@ services:
     ports:
       - "8443:443"
       - "8443:443/udp"
-    environment:
-      - GANDI_API_TOKEN=${GANDI_API_TOKEN}
     volumes:
+      - ./ssl:/ssl:ro
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config

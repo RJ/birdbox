@@ -1,5 +1,5 @@
-# Stage 1: Build
-FROM rust:1.90-bookworm as builder
+# Stage 1: Install cargo-chef
+FROM rust:1.90-bookworm as chef
 
 WORKDIR /usr/src/birdbox-rs
 
@@ -13,18 +13,37 @@ RUN apt-get update && \
     libopus-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy manifests
-COPY Cargo.toml Cargo.lock ./
+# Install cargo-chef
+RUN cargo install cargo-chef
 
-# Copy source code
+# Stage 2: Planner - Generate recipe for dependencies
+FROM chef as planner
+
+COPY Cargo.toml Cargo.lock ./
+COPY doorbird ./doorbird
+COPY src ./src
+COPY templates ./templates
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Stage 3: Builder - Build dependencies (this layer is cached)
+FROM chef as builder
+
+COPY --from=planner /usr/src/birdbox-rs/recipe.json recipe.json
+
+# Build dependencies only - this layer is cached unless Cargo.toml/Cargo.lock changes
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Stage 4: Build application - Copy source and build (fast incremental build)
 COPY src ./src
 COPY doorbird ./doorbird
 COPY templates ./templates
+COPY Cargo.toml Cargo.lock ./
 
-# Build for release
+# Build the application (dependencies already built, so this is fast)
 RUN cargo build --release
 
-# Stage 2: Runtime
+# Stage 5: Runtime
 FROM debian:bookworm-slim
 
 # Install runtime dependencies

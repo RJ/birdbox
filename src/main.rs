@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tower_http::services::ServeDir;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 mod audio_fanout;
@@ -198,8 +198,25 @@ async fn main() {
     );
     let audio_fanout = AudioFanout::new(doorbird_client.clone(), audio_buffer_samples);
 
+    // Read RTSP transport protocol configuration
+    let rtsp_transport = std::env::var("RTSP_TRANSPORT_PROTOCOL")
+        .unwrap_or_else(|_| "udp".to_string())
+        .to_lowercase();
+
+    // Validate and normalize the transport protocol
+    let rtsp_transport = match rtsp_transport.as_str() {
+        "tcp" => {
+            info!("Using TCP transport for RTSP (more reliable for VPN/Docker scenarios)");
+            "tcp"
+        }
+        _ => {
+            info!("Using UDP transport for RTSP (lower latency for simple networks)");
+            "udp"
+        }
+    };
+
     // Create video fanout system with configurable buffer size
-    let video_fanout = VideoFanout::new(rtsp_url, video_buffer_frames);
+    let video_fanout = VideoFanout::new(rtsp_url, video_buffer_frames, rtsp_transport);
 
     // Initialize shared WebRTC infrastructure (UDP mux on port 50000)
     let webrtc_infra = webrtc::WebRtcInfra::new()
@@ -410,7 +427,7 @@ async fn handle_signal_text(
                 .get("sdpMLineIndex")
                 .and_then(|i| i.as_u64())
                 .map(|u| u as u16);
-            debug!(
+            info!(
                 "received client ICE candidate: {} (mid: {:?}, mline: {:?})",
                 candidate, sdp_mid, sdp_mline_index
             );

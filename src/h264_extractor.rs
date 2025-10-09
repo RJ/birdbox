@@ -23,6 +23,7 @@ pub struct H264Packet {
 /// H.264 packet extractor from RTSP stream
 pub struct H264Extractor {
     rtsp_url: String,
+    rtsp_transport: String,
     input_context: Option<ffmpeg::format::context::Input>,
     video_stream_index: Option<usize>,
     time_base: Option<ffmpeg::Rational>,
@@ -35,12 +36,14 @@ impl H264Extractor {
     ///
     /// # Arguments
     /// * `rtsp_url` - RTSP URL with embedded credentials
-    pub fn new(rtsp_url: String) -> Result<Self> {
+    /// * `rtsp_transport` - Transport protocol: "tcp" or "udp"
+    pub fn new(rtsp_url: String, rtsp_transport: &str) -> Result<Self> {
         info!("Initializing ffmpeg for H.264 extraction");
         ffmpeg::init().context("Failed to initialize ffmpeg")?;
 
         let mut extractor = Self {
             rtsp_url,
+            rtsp_transport: rtsp_transport.to_string(),
             input_context: None,
             video_stream_index: None,
             time_base: None,
@@ -54,11 +57,19 @@ impl H264Extractor {
 
     /// Establishes connection to RTSP stream
     fn connect(&mut self) -> Result<()> {
-        info!("Connecting to RTSP stream: {}", self.rtsp_url);
+        let censored_url = if let Some(at_pos) = self.rtsp_url.find('@') {
+            format!("rtsp://*****@{}", &self.rtsp_url[at_pos + 1..])
+        } else {
+            self.rtsp_url.clone()
+        };
+        info!(
+            "Connecting to RTSP stream: {} (transport: {})",
+            censored_url, self.rtsp_transport
+        );
 
         // Open RTSP input with low-latency options
         let mut options = ffmpeg::Dictionary::new();
-        // options.set("rtsp_transport", "tcp"); // Use TCP for more reliable delivery
+        options.set("rtsp_transport", &self.rtsp_transport); // Use configured transport (tcp/udp)
         options.set("fflags", "nobuffer"); // Disable buffering
         options.set("flags", "low_delay"); // Enable low delay mode
         options.set("max_delay", "0"); // Minimize delay

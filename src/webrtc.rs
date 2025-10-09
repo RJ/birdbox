@@ -9,7 +9,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, mpsc::UnboundedSender};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use webrtc::api::API;
 use webrtc::api::APIBuilder;
@@ -17,7 +17,6 @@ use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine};
 use webrtc::ice::udp_mux::*;
 use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
 use webrtc::peer_connection::RTCPeerConnection;
@@ -90,17 +89,17 @@ impl WebRtcInfra {
 
         // Determine which IP to use for WebRTC
         let host_ip = if let Ok(ip) = std::env::var("HOST_IP") {
-            info!("Using HOST_IP from environment: {}", ip);
+            info!("🌐 Using HOST_IP from environment: {}", ip);
             ip
         } else {
             // Auto-detect LAN IP when HOST_IP not set (for non-Docker deployments)
             match get_local_ip() {
                 Some(ip) => {
-                    info!("Auto-detected local IP: {}", ip);
+                    info!("🌐 Auto-detected local IP: {}", ip);
                     ip
                 }
                 None => {
-                    info!("Could not auto-detect local IP, binding to all interfaces");
+                    info!("🌐 Could not auto-detect local IP, binding to all interfaces");
                     "0.0.0.0".to_string()
                 }
             }
@@ -119,15 +118,15 @@ impl WebRtcInfra {
         let (udp_socket, actual_bind_ip) = match bind_udp_socket(&bind_addr).await {
             Ok(socket) => {
                 info!(
-                    "Bound WebRTC UDP socket to {} (shared across all sessions)",
+                    "🌐 Bound WebRTC UDP socket to {} (shared across all sessions)",
                     bind_addr
                 );
                 (socket, host_ip.clone())
             }
             Err(e) => {
                 info!(
-                    "Could not bind to {} ({}), binding to 0.0.0.0:{} instead (Docker mode)",
-                    bind_addr, e, udp_port
+                    "🌐 {}:{} is unbindable, using 0.0.0.0 instead – probably in docker. [{}]",
+                    bind_addr, udp_port, e
                 );
                 let fallback_addr = format!("0.0.0.0:{}", udp_port);
                 let socket = bind_udp_socket(&fallback_addr).await?;
@@ -142,13 +141,13 @@ impl WebRtcInfra {
         if actual_bind_ip != "0.0.0.0" {
             setting_engine
                 .set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
-            info!("Disabled mDNS candidates (using specific IP only)");
+            info!("🌐 Disabled mDNS candidates (using specific IP only)");
         }
 
         // Set NAT 1:1 mapping for non-0.0.0.0 IPs (especially important for Docker)
         if actual_bind_ip != "0.0.0.0" {
             info!(
-                "Setting NAT 1:1 mapping to advertise IP: {}",
+                "🌐 Setting NAT 1:1 mapping to advertise IP: {}",
                 actual_bind_ip
             );
             setting_engine.set_nat_1to1_ips(
@@ -157,19 +156,22 @@ impl WebRtcInfra {
             );
 
             // Filter ICE candidates to only allow the specific IP we want
+            /*
+            // TOO STRICT FOR MULTI INTERFACE SETUPS WITH TAILSCALE
             let filter_ip = actual_bind_ip.clone();
             setting_engine.set_ip_filter(Box::new(move |ip: IpAddr| {
                 let ip_str = ip.to_string();
                 let allowed = ip_str == filter_ip;
                 if !allowed {
-                    debug!(
-                        "Filtered out ICE candidate IP: {} (only allowing {})",
+                    info!(
+                        "🌐 Filtered out ICE candidate IP: {} (only allowing {})",
                         ip_str, filter_ip
                     );
                 }
                 allowed
             }));
-            info!("Set IP filter to only allow: {}", actual_bind_ip);
+            info!("🌐 Set IP filter to only allow: {}", actual_bind_ip);
+            */
         }
 
         let api = APIBuilder::new()
@@ -218,13 +220,9 @@ impl WebRtcSession {
         doorbird_client: doorbird::Client,
         session_id: Uuid,
     ) -> Result<Self> {
-        let cfg = RTCConfiguration {
-            ice_servers: vec![RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".into()],
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
+        // No STUN/TURN servers needed for client-server architecture
+        // where server has known IP and client connects directly
+        let cfg = RTCConfiguration::default();
 
         let pc = Arc::new(infra.api.new_peer_connection(cfg).await?);
 
