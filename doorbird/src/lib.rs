@@ -44,7 +44,7 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
 use std::pin::Pin;
 use tracing::{debug, info};
@@ -74,6 +74,22 @@ pub enum VideoQuality {
     P720,
     /// 1080p resolution (supported by D11x devices)
     P1080,
+}
+
+/// Event received from the DoorBird device's event monitor stream.
+///
+/// These events are produced by the `/bha-api/monitor.cgi` endpoint and represent
+/// state changes of the doorbell button and motion sensor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MonitorEvent {
+    /// Doorbell button pressed (state H)
+    /// Released events (state L) are ignored
+    Doorbell,
+
+    /// Motion sensor event
+    /// - `active: true` means motion detected (state H)
+    /// - `active: false` means motion cleared (state L)
+    MotionSensor { active: bool },
 }
 
 /// Device information returned from the `/bha-api/info.cgi` endpoint.
@@ -535,4 +551,184 @@ impl Client {
             anyhow::bail!("Open door request failed with status: {}", status)
         }
     }
+
+    /// Monitors for doorbell and motion sensor events from the DoorBird device.
+    ///
+    /// **API Endpoint:** `GET /bha-api/monitor.cgi?ring=doorbell,motionsensor`
+    ///
+    /// **Required Permission:** Valid user
+    ///
+    /// This method returns a continuous multipart stream that yields events as they occur
+    /// on the DoorBird device. Events are sent when the doorbell button is pressed/released
+    /// or when motion is detected/cleared.
+    ///
+    /// **Note:** The stream can be interrupted at any time. The caller is responsible for
+    /// reconnecting if needed. Up to 8 concurrent monitor streams are allowed per device.
+    ///
+    /// # Returns
+    ///
+    /// A stream of `MonitorEvent` results. The stream will continue indefinitely until
+    /// the connection is closed or an error occurs.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use doorbird::{Client, MonitorEvent};
+    /// # use futures_util::StreamExt;
+    /// # async fn example() -> anyhow::Result<()> {
+    /// # let client = Client::new("http://192.168.1.100".into(), "user".into(), "pass".into());
+    /// let mut event_stream = client.monitor_events().await?;
+    ///
+    /// while let Some(event_result) = event_stream.next().await {
+    ///     match event_result {
+    ///         Ok(MonitorEvent::Doorbell) => {
+    ///             println!("Doorbell pressed!");
+    ///         }
+    ///         Ok(MonitorEvent::MotionSensor { active }) => {
+    ///             println!("Motion: {}", if active { "detected" } else { "cleared" });
+    ///         }
+    ///         Err(e) => {
+    ///             eprintln!("Stream error: {}", e);
+    ///             break;
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn monitor_events(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<MonitorEvent>> + Send>>> {
+        let url = format!(
+            "{}/bha-api/monitor.cgi?ring=doorbell,motionsensor",
+            self.base_url
+        );
+        info!("Connecting to DoorBird event monitor at {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .basic_auth(&self.username, Some(&self.password))
+            .timeout(std::time::Duration::from_secs(3600)) // 1 hour timeout for streaming
+            .send()
+            .await
+            .context("Failed to send monitor request")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            if status.as_u16() == 509 {
+                anyhow::bail!(
+                    "Monitor request failed: all monitor streams are busy (509). \
+                    Maximum 8 concurrent streams allowed."
+                );
+            }
+            anyhow::bail!("Monitor request failed with status: {}", status);
+        }
+
+        // Create a stream that parses the multipart response
+        let byte_stream = response.bytes_stream();
+        let event_stream = parse_monitor_stream(byte_stream);
+
+        Ok(Box::pin(event_stream))
+    }
+}
+
+/// Parses the multipart monitor stream into individual events.
+///
+/// The stream format is:
+/// ```text
+/// --ioboundary\r\n
+/// Content-Type: text/plain\r\n
+/// \r\n
+/// doorbell:H\r\n
+/// \r\n
+/// --ioboundary\r\n
+/// ...
+/// ```
+fn parse_monitor_stream(
+    byte_stream: impl Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + 'static,
+) -> impl Stream<Item = Result<MonitorEvent>> + Send {
+    // Pin the stream so we can poll it in the async closure
+    let pinned_stream = Box::pin(byte_stream);
+
+    // Use try_unfold to maintain state and yield events as they're parsed
+    futures_util::stream::try_unfold(
+        (pinned_stream, Vec::new()),
+        |(mut stream, mut buffer)| async move {
+            loop {
+                // Try to extract an event from the current buffer
+                if let Some(event) = extract_event_from_buffer(&mut buffer) {
+                    return Ok(Some((event, (stream, buffer))));
+                }
+
+                // Need more data - fetch next chunk
+                match stream.next().await {
+                    Some(Ok(chunk)) => {
+                        buffer.extend_from_slice(&chunk);
+                        // Continue loop to try extracting again
+                    }
+                    Some(Err(e)) => {
+                        return Err(anyhow::anyhow!("Stream error: {}", e));
+                    }
+                    None => {
+                        // Stream ended
+                        return Ok(None);
+                    }
+                }
+            }
+        },
+    )
+}
+
+/// Extracts the next event from the buffer, removing consumed bytes.
+///
+/// Returns None if no complete event is available yet.
+fn extract_event_from_buffer(buffer: &mut Vec<u8>) -> Option<MonitorEvent> {
+    // Convert buffer to string for easier parsing
+    let text = String::from_utf8_lossy(buffer);
+
+    // Look for the event pattern: <type>:<state>
+    // Events appear after the headers section (after \r\n\r\n)
+
+    // Find pattern like "doorbell:H" or "motionsensor:L"
+    if let Some(doorbell_pos) = text.find("doorbell:") {
+        // Check if we have the complete event (should end with \r\n)
+        if let Some(event_end) = text[doorbell_pos..].find("\r\n") {
+            let event_line = &text[doorbell_pos..doorbell_pos + event_end];
+            let state = event_line.chars().last()?;
+
+            // Remove consumed bytes from buffer
+            buffer.drain(0..doorbell_pos + event_end + 2);
+
+            // Only emit event when doorbell is pressed (H), ignore released (L)
+            if state == 'H' {
+                return Some(MonitorEvent::Doorbell);
+            }
+            // For 'L' state, continue to check for more events
+            return extract_event_from_buffer(buffer);
+        }
+    }
+
+    if let Some(motion_pos) = text.find("motionsensor:") {
+        // Check if we have the complete event (should end with \r\n)
+        if let Some(event_end) = text[motion_pos..].find("\r\n") {
+            let event_line = &text[motion_pos..motion_pos + event_end];
+            let state = event_line.chars().last()?;
+
+            // Remove consumed bytes from buffer
+            buffer.drain(0..motion_pos + event_end + 2);
+
+            return Some(MonitorEvent::MotionSensor {
+                active: state == 'H',
+            });
+        }
+    }
+
+    // If buffer is getting too large without finding events, trim it
+    if buffer.len() > 4096 {
+        // Keep only the last 1KB in case we're in the middle of a boundary
+        buffer.drain(0..buffer.len() - 1024);
+    }
+
+    None
 }

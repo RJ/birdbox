@@ -138,6 +138,51 @@ async fn main() {
         doorbird_password.clone(),
     );
 
+    // Spawn background task to monitor DoorBird events
+    let monitor_client = doorbird_client.clone();
+    tokio::spawn(async move {
+        loop {
+            info!("DoorBird event monitor connecting...");
+
+            match monitor_client.monitor_events().await {
+                Ok(mut event_stream) => {
+                    info!("DoorBird event monitor connected");
+
+                    // Process events as they arrive
+                    while let Some(event_result) = event_stream.next().await {
+                        match event_result {
+                            Ok(doorbird::MonitorEvent::Doorbell) => {
+                                info!("🔔 DoorBird event: Doorbell pressed!");
+                            }
+                            Ok(doorbird::MonitorEvent::MotionSensor { active }) => {
+                                if active {
+                                    warn!("👁️  DoorBird event: Motion detected!");
+                                } else {
+                                    info!("DoorBird event: Motion cleared");
+                                }
+                            }
+                            Err(e) => {
+                                warn!("DoorBird event stream error: {:#}", e);
+                                break;
+                            }
+                        }
+                    }
+
+                    warn!("DoorBird event monitor disconnected, reconnecting in 5s...");
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to connect to DoorBird event monitor: {:#}, reconnecting in 5s...",
+                        e
+                    );
+                }
+            }
+
+            // Wait before reconnecting
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+    });
+
     // Fetch and display device information
     info!("Connecting to DoorBird at {}", doorbird_url);
     let device_info = match doorbird_client.info().await {

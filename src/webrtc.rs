@@ -125,7 +125,7 @@ impl WebRtcInfra {
             }
             Err(e) => {
                 info!(
-                    "🌐 {}:{} is unbindable, using 0.0.0.0 instead – probably in docker. [{}]",
+                    "🌐 {} is unbindable, using 0.0.0.0:{} instead – probably in docker. [{}]",
                     bind_addr, udp_port, e
                 );
                 let fallback_addr = format!("0.0.0.0:{}", udp_port);
