@@ -87,7 +87,11 @@ impl WebRtcInfra {
         // Configure NAT 1:1 mapping and UDP mux for Docker deployment
         let mut setting_engine = webrtc::api::setting_engine::SettingEngine::default();
 
-        // Determine which IP to use for WebRTC
+        // Determine which IP(s) to advertise for WebRTC ICE candidates
+        // Supports split-brain DNS / dual network topology:
+        // - HOST_IP: Public IP for external clients
+        // - HOST_IP_LAN: LAN IP for internal clients (optional)
+        // If both are set, both IPs are advertised as candidates
         let host_ip = if let Ok(ip) = std::env::var("HOST_IP") {
             info!("🌐 Using HOST_IP from environment: {}", ip);
             ip
@@ -105,73 +109,89 @@ impl WebRtcInfra {
             }
         };
 
+        // Check for optional LAN IP for dual-network setups
+        let host_ip_lan = std::env::var("HOST_IP_LAN").ok();
+
         // Use UDP mux to multiplex all WebRTC traffic over a single UDP port
         let udp_port = std::env::var("UDP_PORT")
             .ok()
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(50000);
 
-        // Bind to specific IP to ensure only that interface is used for ICE candidates
-        // Try to bind to the specific IP first (for native/host deployments)
-        // If that fails (e.g., in Docker where container doesn't have HOST_IP), bind to 0.0.0.0
-        let bind_addr = format!("{}:{}", host_ip, udp_port);
-        let (udp_socket, actual_bind_ip) = match bind_udp_socket(&bind_addr).await {
+        // Build list of IPs to advertise as ICE candidates
+        // Priority order: try LAN IP first for binding (more likely to work), then public IP
+        let mut advertised_ips = Vec::new();
+
+        // Try to determine which IP to bind to (LAN IP is more likely to be bindable)
+        let bind_ip_candidate = host_ip_lan.as_ref().unwrap_or(&host_ip);
+        let bind_addr = format!("{}:{}", bind_ip_candidate, udp_port);
+
+        let udp_socket = match bind_udp_socket(&bind_addr).await {
             Ok(socket) => {
                 info!(
                     "🌐 Bound WebRTC UDP socket to {} (shared across all sessions)",
                     bind_addr
                 );
-                (socket, host_ip.clone())
+                socket
             }
             Err(e) => {
                 info!(
-                    "🌐 {} is unbindable, using 0.0.0.0:{} instead – probably in docker. [{}]",
+                    "🌐 {} is unbindable, using 0.0.0.0:{} instead – probably in Docker. [{}]",
                     bind_addr, udp_port, e
                 );
                 let fallback_addr = format!("0.0.0.0:{}", udp_port);
-                let socket = bind_udp_socket(&fallback_addr).await?;
-                (socket, host_ip.clone())
+                bind_udp_socket(&fallback_addr).await?
             }
         };
+
+        // Determine which IPs to advertise based on configuration
+        // In dual-IP mode, advertise both; in single-IP mode, advertise one
+        if let Some(lan_ip) = &host_ip_lan {
+            // Dual-IP mode: advertise both LAN and public IPs
+            advertised_ips.push(lan_ip.clone());
+            if &host_ip != lan_ip && host_ip != "0.0.0.0" {
+                advertised_ips.push(host_ip.clone());
+            }
+            info!(
+                "🌐 Dual-network mode: advertising {} ICE candidate(s): {:?}",
+                advertised_ips.len(),
+                advertised_ips
+            );
+        } else if host_ip != "0.0.0.0" {
+            // Single-IP mode: advertise only HOST_IP
+            advertised_ips.push(host_ip.clone());
+            info!(
+                "🌐 Single-network mode: advertising ICE candidate: {}",
+                host_ip
+            );
+        } else {
+            info!(
+                "🌐 No specific IPs to advertise (binding to 0.0.0.0, will use discovered candidates)"
+            );
+        }
 
         let udp_mux = UDPMuxDefault::new(UDPMuxParams::new(udp_socket));
         setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
 
-        // Disable mDNS to prevent .local candidates (we want specific IP only)
-        if actual_bind_ip != "0.0.0.0" {
+        // Disable mDNS to prevent .local candidates when we have specific IPs to advertise
+        if !advertised_ips.is_empty() {
             setting_engine
                 .set_ice_multicast_dns_mode(webrtc::ice::mdns::MulticastDnsMode::Disabled);
-            info!("🌐 Disabled mDNS candidates (using specific IP only)");
+            info!("🌐 Disabled mDNS candidates (using specific IPs only)");
         }
 
-        // Set NAT 1:1 mapping for non-0.0.0.0 IPs (especially important for Docker)
-        if actual_bind_ip != "0.0.0.0" {
+        // Set NAT 1:1 mapping to advertise our configured IP(s)
+        // This tells WebRTC to advertise these IPs as host candidates
+        // In dual-IP mode, both IPs are advertised and the client will try both
+        if !advertised_ips.is_empty() {
             info!(
-                "🌐 Setting NAT 1:1 mapping to advertise IP: {}",
-                actual_bind_ip
+                "🌐 Setting NAT 1:1 mapping to advertise {} IP(s) as ICE candidates",
+                advertised_ips.len()
             );
             setting_engine.set_nat_1to1_ips(
-                vec![actual_bind_ip.clone()],
+                advertised_ips,
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
-
-            // Filter ICE candidates to only allow the specific IP we want
-            /*
-            // TOO STRICT FOR MULTI INTERFACE SETUPS WITH TAILSCALE
-            let filter_ip = actual_bind_ip.clone();
-            setting_engine.set_ip_filter(Box::new(move |ip: IpAddr| {
-                let ip_str = ip.to_string();
-                let allowed = ip_str == filter_ip;
-                if !allowed {
-                    info!(
-                        "🌐 Filtered out ICE candidate IP: {} (only allowing {})",
-                        ip_str, filter_ip
-                    );
-                }
-                allowed
-            }));
-            info!("🌐 Set IP filter to only allow: {}", actual_bind_ip);
-            */
         }
 
         let api = APIBuilder::new()

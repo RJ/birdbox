@@ -423,8 +423,14 @@
 
     async function connect() {
         setConnectionStatus('Connecting...');
+        // Client-server architecture: no STUN needed
+        // Server advertises its IP(s) as host candidates via NAT 1:1 mapping
+        // In dual-network setups, server advertises both LAN and public IPs
+        // WebRTC ICE will automatically select the best route:
+        // - LAN clients connect directly via LAN IP (fast, no router)
+        // - External clients connect via public IP (NAT forwarding)
         pc = new RTCPeerConnection({
-            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            iceServers: []  // Empty - rely on server's advertised candidates
         });
 
         // Ensure the offer contains media m-lines for receiving server audio and video

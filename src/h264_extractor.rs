@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 pub struct H264Packet {
     /// Raw H.264 packet data
     pub data: Bytes,
+    #[allow(unused)]
     /// Packet timestamp
     pub timestamp: Duration,
     /// Whether this is a keyframe
