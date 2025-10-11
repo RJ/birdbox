@@ -52,8 +52,13 @@ impl AudioTranscoder {
         // Create resampler: 8kHz -> 48kHz (6x upsampling)
         // Input: 160 samples @ 8kHz = 20ms
         // Output: 960 samples @ 48kHz = 20ms
+        //
+        // Latency trade-off: sinc_len=256 provides high-quality resampling with minimal artifacts
+        // but introduces ~32ms of latency (filter delay). This is acceptable for voice communication
+        // and ensures clean audio without aliasing. Lower values (e.g., 64) would reduce latency
+        // to ~10ms but degrade audio quality. For doorbell/intercom use, quality > ultra-low latency.
         let params = SincInterpolationParameters {
-            sinc_len: 256,
+            sinc_len: 256, // Filter length: higher = better quality, more latency
             f_cutoff: 0.95,
             interpolation: SincInterpolationType::Linear,
             oversampling_factor: 256,

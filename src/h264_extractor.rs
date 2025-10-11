@@ -9,15 +9,21 @@ use ffmpeg_next as ffmpeg;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
+/// Cooldown period between reconnection attempts
+const RECONNECT_COOLDOWN_SECS: u64 = 2;
+
 /// H.264 packet ready for WebRTC transmission
 #[derive(Clone, Debug)]
 pub struct H264Packet {
     /// Raw H.264 packet data
     pub data: Bytes,
+    /// Packet timestamp from RTSP stream
+    ///
+    /// Note: Available for reference, but WebRTC uses fixed sample duration (~83ms)
+    /// instead of accumulated timestamps to prevent drift.
     #[allow(unused)]
-    /// Packet timestamp
     pub timestamp: Duration,
-    /// Whether this is a keyframe
+    /// Whether this is a keyframe (I-frame)
     pub is_keyframe: bool,
 }
 
@@ -70,10 +76,20 @@ impl H264Extractor {
 
         // Open RTSP input with low-latency options
         let mut options = ffmpeg::Dictionary::new();
-        options.set("rtsp_transport", &self.rtsp_transport); // Use configured transport (tcp/udp)
-        options.set("fflags", "nobuffer"); // Disable buffering
-        options.set("flags", "low_delay"); // Enable low delay mode
-        options.set("max_delay", "0"); // Minimize delay
+
+        // Transport protocol: TCP (reliable, required for VPN) or UDP (lower latency for simple networks)
+        options.set("rtsp_transport", &self.rtsp_transport);
+
+        // nobuffer: Disable ffmpeg's internal buffering (~1-2s reduction in latency)
+        // This is critical for real-time streaming applications
+        options.set("fflags", "nobuffer");
+
+        // low_delay: Enable low-delay mode for decoder
+        // Optimizes for latency over throughput
+        options.set("flags", "low_delay");
+
+        // max_delay: Minimize decoder-level delay (eliminates ~100-200ms)
+        options.set("max_delay", "0");
 
         let input = ffmpeg::format::input_with_dictionary(&self.rtsp_url, options)
             .context("Failed to open RTSP stream")?;
@@ -132,7 +148,7 @@ impl H264Extractor {
         // If we're reconnecting, check if it's time to retry
         if self.is_reconnecting {
             let elapsed = self.last_reconnect_attempt.elapsed();
-            if elapsed >= Duration::from_secs(2) {
+            if elapsed >= Duration::from_secs(RECONNECT_COOLDOWN_SECS) {
                 self.last_reconnect_attempt = Instant::now();
                 match self.reconnect() {
                     Ok(_) => {

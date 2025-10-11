@@ -58,9 +58,13 @@ async fn bind_udp_socket(addr: &str) -> Result<UdpSocket> {
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
 
     // Enable SO_REUSEADDR to allow quick rebinding after connection close
+    // This prevents "Address already in use" errors when restarting the server quickly,
+    // which is common during development and restart scenarios. Without this, the OS
+    // may hold the port in TIME_WAIT state for several minutes after close.
     socket.set_reuse_address(true)?;
 
-    // On Unix systems, also set SO_REUSEPORT for better behavior
+    // On Unix systems, also set SO_REUSEPORT for load balancing across threads
+    // (though we only use one socket, this ensures consistent behavior)
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
 
@@ -78,20 +82,36 @@ pub struct WebRtcInfra {
 impl WebRtcInfra {
     /// Initialize the shared WebRTC infrastructure with a persistent UDP mux
     pub async fn new() -> Result<Arc<Self>> {
-        // MediaEngine with Opus
-        let mut m = MediaEngine::default();
-        m.register_default_codecs()?;
+        // MediaEngine with Opus and H.264 codec support
+        let mut media_engine = MediaEngine::default();
+        media_engine.register_default_codecs()?;
 
         let registry = Registry::new();
 
         // Configure NAT 1:1 mapping and UDP mux for Docker deployment
         let mut setting_engine = webrtc::api::setting_engine::SettingEngine::default();
 
-        // Determine which IP(s) to advertise for WebRTC ICE candidates
+        // ═══════════════════════════════════════════════════════════════════════════
+        // ICE Candidate Selection Strategy
+        // ═══════════════════════════════════════════════════════════════════════════
+        //
+        // Problem: WebRTC by default gathers ICE candidates from all network interfaces
+        // (localhost, LAN IP, VPN interfaces, mDNS .local hostnames). This causes
+        // connection failures when clients try the wrong interface.
+        //
+        // Solution: Three-layer control to advertise only the correct IP(s):
+        // 1. Specific IP binding (primary) - Binds UDP socket to specific IP, forcing
+        //    OS to use only that interface for UDP traffic
+        // 2. mDNS disable - Prevents .local hostname candidates
+        // 3. NAT 1:1 mapping - Advertises external IP for Docker deployments
+        //
         // Supports split-brain DNS / dual network topology:
-        // - HOST_IP: Public IP for external clients
+        // - HOST_IP: Public/primary IP for external clients
         // - HOST_IP_LAN: LAN IP for internal clients (optional)
-        // If both are set, both IPs are advertised as candidates
+        // - If both set, both IPs advertised → WebRTC auto-selects best route
+        // ═══════════════════════════════════════════════════════════════════════════
+
+        // Determine which IP(s) to advertise for WebRTC ICE candidates
         let host_ip = if let Ok(ip) = std::env::var("HOST_IP") {
             info!("🌐 Using HOST_IP from environment: {}", ip);
             ip
@@ -195,7 +215,7 @@ impl WebRtcInfra {
         }
 
         let api = APIBuilder::new()
-            .with_media_engine(m)
+            .with_media_engine(media_engine)
             .with_interceptor_registry(registry)
             .with_setting_engine(setting_engine)
             .build();

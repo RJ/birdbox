@@ -5,7 +5,7 @@ resolver = "2"
 [package]
 name = "birdbox-rs"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 axum = { version = "0.8.6", features = ["ws", "http1", "json"] }

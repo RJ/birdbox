@@ -13,9 +13,18 @@ use doorbird::Client as DoorBirdClient;
 use futures_util::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
+
+/// Grace period before disconnecting from DoorBird after last subscriber leaves
+const AUDIO_GRACE_PERIOD_SECS: u64 = 3;
+
+/// Delay before retrying after connection error
+const RECONNECT_DELAY_SECS: u64 = 5;
+
+/// Polling interval for checking subscriber count
+const SUBSCRIBER_POLL_INTERVAL_MS: u64 = 100;
 
 /// Opus audio sample ready for WebRTC transmission
 #[derive(Clone, Debug)]
@@ -119,7 +128,7 @@ impl AudioFanout {
                     break;
                 }
                 drop(state);
-                sleep(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(SUBSCRIBER_POLL_INTERVAL_MS)).await;
             }
 
             // Connect and stream
@@ -136,7 +145,7 @@ impl AudioFanout {
                 Err(e) => {
                     error!("DoorBird audio stream error: {:#}", e);
                     // Wait before retry
-                    sleep(Duration::from_secs(5)).await;
+                    sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
                 }
             }
 
@@ -148,9 +157,12 @@ impl AudioFanout {
 
             info!("Disconnected from DoorBird audio stream");
 
-            // Grace period: wait 3 seconds to see if subscribers come back
-            debug!("Starting 3-second grace period...");
-            sleep(Duration::from_secs(3)).await;
+            // Grace period: wait to see if subscribers come back
+            debug!(
+                "Starting {}-second grace period...",
+                AUDIO_GRACE_PERIOD_SECS
+            );
+            sleep(Duration::from_secs(AUDIO_GRACE_PERIOD_SECS)).await;
 
             // Check if we should reconnect
             let state = self.state.read().await;
@@ -246,7 +258,9 @@ impl AudioFanout {
         Ok(())
     }
 
-    /// Get current subscriber count (for debugging/monitoring)
+    /// Get current subscriber count
+    ///
+    /// Useful for debugging, monitoring endpoints, or metrics collection.
     #[allow(dead_code)]
     pub async fn subscriber_count(&self) -> usize {
         let state = self.state.read().await;
@@ -254,6 +268,8 @@ impl AudioFanout {
     }
 
     /// Check if currently connected to DoorBird
+    ///
+    /// Useful for debugging, monitoring endpoints, or health checks.
     #[allow(dead_code)]
     pub async fn is_connected(&self) -> bool {
         let state = self.state.read().await;

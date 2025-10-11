@@ -44,7 +44,6 @@ pub fn decode_ulaw(ulaw: u8) -> i16 {
 ///
 /// # Returns
 /// Vector of 16-bit linear PCM samples
-#[allow(dead_code)]
 pub fn decode_ulaw_buffer(input: &[u8]) -> Vec<i16> {
     input.iter().map(|&byte| decode_ulaw(byte)).collect()
 }

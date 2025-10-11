@@ -11,9 +11,18 @@ use crate::h264_extractor::{H264Extractor, H264Packet};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{broadcast, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, error, info};
+
+/// Grace period before disconnecting from RTSP after last subscriber leaves (longer than audio due to reconnect overhead)
+const VIDEO_GRACE_PERIOD_SECS: u64 = 5;
+
+/// Delay before retrying after connection error
+const RECONNECT_DELAY_SECS: u64 = 5;
+
+/// Polling interval for checking subscriber count
+const SUBSCRIBER_POLL_INTERVAL_MS: u64 = 100;
 
 /// State of the video fanout connection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +120,7 @@ impl VideoFanout {
                     break;
                 }
                 drop(state);
-                sleep(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(SUBSCRIBER_POLL_INTERVAL_MS)).await;
             }
 
             // Connect and stream
@@ -128,7 +137,7 @@ impl VideoFanout {
                 Err(e) => {
                     error!("DoorBird video stream error: {:#}", e);
                     // Wait before retry
-                    sleep(Duration::from_secs(5)).await;
+                    sleep(Duration::from_secs(RECONNECT_DELAY_SECS)).await;
                 }
             }
 
@@ -140,9 +149,12 @@ impl VideoFanout {
 
             info!("Disconnected from DoorBird video stream");
 
-            // Grace period: wait 5 seconds to see if subscribers come back
-            debug!("Starting 5-second grace period...");
-            sleep(Duration::from_secs(5)).await;
+            // Grace period: wait to see if subscribers come back
+            debug!(
+                "Starting {}-second grace period...",
+                VIDEO_GRACE_PERIOD_SECS
+            );
+            sleep(Duration::from_secs(VIDEO_GRACE_PERIOD_SECS)).await;
 
             // Check if we should reconnect
             let state = self.state.read().await;
@@ -231,7 +243,9 @@ impl VideoFanout {
         Ok(())
     }
 
-    /// Get current subscriber count (for debugging/monitoring)
+    /// Get current subscriber count
+    ///
+    /// Useful for debugging, monitoring endpoints, or metrics collection.
     #[allow(dead_code)]
     pub async fn subscriber_count(&self) -> usize {
         let state = self.state.read().await;
@@ -239,6 +253,8 @@ impl VideoFanout {
     }
 
     /// Check if currently connected to DoorBird
+    ///
+    /// Useful for debugging, monitoring endpoints, or health checks.
     #[allow(dead_code)]
     pub async fn is_connected(&self) -> bool {
         let state = self.state.read().await;

@@ -1,3 +1,19 @@
+//! Birdbox - WebRTC Gateway for DoorBird Smart Doorbells
+//!
+//! This application streams audio and video from DoorBird smart doorbells to web browsers
+//! via WebRTC, enabling real-time viewing and two-way push-to-talk communication.
+//!
+//! # Architecture
+//!
+//! - HTTP/WebSocket server (Axum) for web interface and signaling
+//! - WebRTC server for audio/video streaming  
+//! - DoorBird API client for device communication
+//! - Fanout system for distributing one DoorBird connection to N viewers
+//! - Audio transcoding pipeline (G.711 μ-law ↔ Opus)
+//! - Video pass-through (H.264 forwarding, no transcoding)
+//!
+//! See `docs/ARCHITECTURE.md` for detailed system design.
+
 use askama::Template;
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::Html;
@@ -20,7 +36,10 @@ mod webrtc;
 use audio_fanout::AudioFanout;
 use video_fanout::VideoFanout;
 
-/// Push-to-talk state tracking
+/// Push-to-talk (PTT) state coordinator
+///
+/// Ensures only one client can transmit audio to the DoorBird at a time.
+/// Broadcasts PTT state changes to all connected clients so they can update their UI.
 struct PttState {
     /// Session ID of the client currently transmitting (if any)
     active_session: Arc<RwLock<Option<Uuid>>>,
@@ -28,10 +47,12 @@ struct PttState {
     state_tx: broadcast::Sender<PttStateMessage>,
 }
 
-/// PTT state message broadcast to all clients
+/// PTT state change notification sent to all connected clients
 #[derive(Clone, Debug)]
 struct PttStateMessage {
+    /// Whether someone is currently transmitting
     transmitting: bool,
+    /// ID of the session that's transmitting (for debugging)
     #[allow(dead_code)]
     session_id: Option<Uuid>,
 }
@@ -95,13 +116,20 @@ impl PttState {
     }
 }
 
-// Application state shared across all connections
+/// Application state shared across all connections
+///
+/// Holds all the shared resources that WebSocket handlers and HTTP endpoints need access to.
 #[derive(Clone)]
 struct AppState {
+    /// Audio fanout for distributing DoorBird audio to multiple clients
     audio_fanout: Arc<AudioFanout>,
+    /// Video fanout for distributing DoorBird video to multiple clients
     video_fanout: Arc<VideoFanout>,
+    /// Shared WebRTC infrastructure (UDP mux, API)
     webrtc_infra: Arc<webrtc::WebRtcInfra>,
+    /// Push-to-talk coordination
     ptt_state: Arc<PttState>,
+    /// DoorBird API client for device control
     doorbird_client: doorbird::Client,
 }
 
@@ -434,17 +462,26 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     }
 }
 
+/// Handle WebRTC signaling messages from the client
+///
+/// Processes JSON messages for:
+/// - SDP offer/answer exchange
+/// - ICE candidate exchange  
+/// - Push-to-talk control (start/stop)
 async fn handle_signal_text(
     session: &webrtc::WebRtcSession,
     state: &AppState,
     session_id: Uuid,
-    txt: &str,
+    json_text: &str,
 ) -> anyhow::Result<()> {
-    let v: serde_json::Value = serde_json::from_str(txt)?;
-    let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    match t {
+    let signal_msg: serde_json::Value = serde_json::from_str(json_text)?;
+    let msg_type = signal_msg
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    match msg_type {
         "offer" => {
-            let sdp = v
+            let sdp = signal_msg
                 .get("sdp")
                 .and_then(|s| s.as_str())
                 .unwrap_or("")
@@ -459,16 +496,16 @@ async fn handle_signal_text(
             let _ = session.ws_out.send(Message::Text(msg.to_string().into()));
         }
         "candidate" => {
-            let candidate = v
+            let candidate = signal_msg
                 .get("candidate")
                 .and_then(|c| c.as_str())
                 .unwrap_or("")
                 .to_string();
-            let sdp_mid = v
+            let sdp_mid = signal_msg
                 .get("sdpMid")
                 .and_then(|m| m.as_str())
                 .map(|s| s.to_string());
-            let sdp_mline_index = v
+            let sdp_mline_index = signal_msg
                 .get("sdpMLineIndex")
                 .and_then(|i| i.as_u64())
                 .map(|u| u as u16);
