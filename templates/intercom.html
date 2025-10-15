@@ -300,11 +300,39 @@
             try {
                 const permission = await navigator.permissions.query({ name: 'microphone' });
                 log('Microphone permission state:', permission.state);
+
+                // If permission is granted but we're still getting NotFoundError, 
+                // this suggests a system-level microphone issue
+                if (permission.state === 'granted') {
+                    log('⚠️  Permission granted but device not found - possible system-level issue');
+                    log('🔧 Suggestions:');
+                    log('   1. Check if microphone is physically connected and not muted');
+                    log('   2. Verify microphone works in other applications');
+                    log('   3. Try restarting Firefox');
+                    log('   4. Check Firefox about:config settings');
+                }
             } catch (e) {
                 log('Could not query microphone permission:', e.message);
             }
         } else {
             log('Permissions API not available');
+        }
+
+        // Try to get device information
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioInputs = devices.filter(d => d.kind === 'audioinput');
+            log(`Found ${audioInputs.length} audio input devices`);
+
+            if (audioInputs.length === 0) {
+                log('❌ No audio input devices detected by browser');
+                log('🔧 This may indicate:');
+                log('   - No microphone connected to system');
+                log('   - Microphone disabled in system settings');
+                log('   - Firefox cannot access microphone hardware');
+            }
+        } catch (e) {
+            log('Could not enumerate devices:', e.message);
         }
 
         return true;
@@ -453,6 +481,36 @@
                             });
                         }
                         throw new Error('Legacy getUserMedia not available');
+                    },
+
+                    // Strategy 8: Firefox-specific workaround for "permission granted but device not found"
+                    async () => {
+                        log('Trying Firefox-specific workaround...');
+
+                        // Try to reset permission state by requesting again
+                        try {
+                            // First, try to get a temporary stream to "refresh" the permission
+                            const tempStream = await navigator.mediaDevices.getUserMedia({
+                                audio: {
+                                    deviceId: undefined,
+                                    echoCancellation: false,
+                                    noiseSuppression: false,
+                                    autoGainControl: false
+                                }
+                            });
+
+                            // Stop the temporary stream
+                            tempStream.getTracks().forEach(track => track.stop());
+
+                            log('Permission refresh successful, trying again...');
+
+                            // Now try again with the original constraints
+                            return await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                        } catch (e) {
+                            log('Permission refresh failed:', e.message);
+                            throw e;
+                        }
                     }
                 ];
 
@@ -547,7 +605,23 @@
 
         } catch (e) {
             console.error('Failed to start transmission:', e);
-            alert('Failed to access microphone: ' + e.message + '\n\nTry refreshing the page and granting microphone permissions when prompted.');
+
+            // Provide specific guidance based on the error
+            let errorMessage = 'Failed to access microphone: ' + e.message;
+
+            if (e.message.includes('object can not be found')) {
+                errorMessage += '\n\n🔧 Firefox Microphone Troubleshooting:\n\n' +
+                    '1. Check if your microphone is connected and not muted\n' +
+                    '2. Test your microphone in another application (e.g., Voice Recorder)\n' +
+                    '3. Restart Firefox completely\n' +
+                    '4. Check Firefox settings: about:preferences#privacy → Microphone\n' +
+                    '5. Try refreshing this page and granting permission again\n\n' +
+                    'If the issue persists, this may be a Firefox-specific bug with your system configuration.';
+            } else {
+                errorMessage += '\n\nTry refreshing the page and granting microphone permissions when prompted.';
+            }
+
+            alert(errorMessage);
             // Reset state on error
             isTransmitting = false;
             updateTransmitButton();
