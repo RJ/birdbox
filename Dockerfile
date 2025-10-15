@@ -52,24 +52,21 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Stage 6: Final runtime with distroless
-FROM gcr.io/distroless/cc-debian12
+FROM gcr.io/distroless/cc-debian12:debug
 
 WORKDIR /app
 
-# Copy the per-arch shared libs using globs that match either:
-#   /usr/lib/aarch64-linux-gnu/…  or  /usr/lib/x86_64-linux-gnu/…
-# This works for both arm64 and amd64 builds without conditional logic.
+# Copy the per-arch shared libs and symlinks.
+# This glob pattern matches:
+#     /usr/lib/x86_64-linux-gnu/ on amd64
+#     /usr/lib/aarch64-linux-gnu/ on arm64
 COPY --from=runtime-deps /usr/lib/*-linux-gnu/libopus.so.*   /lib/*-linux-gnu/
 COPY --from=runtime-deps /usr/lib/*-linux-gnu/libssl.so.*    /lib/*-linux-gnu/
 COPY --from=runtime-deps /usr/lib/*-linux-gnu/libcrypto.so.* /lib/*-linux-gnu/
 
-# Copy the symlinks that the libraries need (these should exist in the runtime-deps stage)
-#COPY --from=runtime-deps /usr/lib/aarch64-linux-gnu/libopus.so.0 /lib/aarch64-linux-gnu/
-
 # Copy the binary from builder
 COPY --from=builder /usr/src/birdbox-rs/target/release/birdbox-rs .
 
-# Copy templates
 COPY templates ./templates
 
 # Expose the HTTP/WebSocket port
@@ -80,4 +77,3 @@ EXPOSE 50000/udp
 
 # Run the server
 CMD ["./birdbox-rs"]
-
