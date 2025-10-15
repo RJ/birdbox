@@ -37,6 +37,8 @@ pub fn decode_ulaw(ulaw: u8) -> i16 {
     ULAW_TO_LINEAR[ulaw as usize]
 }
 
+// used in tests:
+#[allow(dead_code)]
 /// Decodes a buffer of G.711 μ-law samples to linear PCM
 ///
 /// # Arguments

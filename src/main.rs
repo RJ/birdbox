@@ -308,6 +308,7 @@ async fn main() {
     };
 
     let app = Router::new()
+        .route("/", get(intercom))
         .route("/intercom", get(intercom))
         .route("/ws", get(ws_handler))
         .route("/api/open-gates", axum::routing::post(open_gates))

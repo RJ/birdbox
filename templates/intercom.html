@@ -207,7 +207,10 @@
 
 {% block scripts %}
 <script>
-    const log = (...args) => console.log('[webrtc]', ...args);
+    const log = (...args) => {
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] [webrtc]`, ...args);
+    };
     const connectionStatusEl = document.getElementById('connectionStatus');
     const audioPromptEl = document.getElementById('audioPrompt');
     const audioEl = document.getElementById('audio');
@@ -245,6 +248,23 @@
     let localStream = null;
     let isTransmitting = false;
     let othersTransmitting = false;
+
+    // Add this function to debug media devices
+    async function debugMediaDevices() {
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            log('Available media devices:', devices);
+
+            const audioInputs = devices.filter(device => device.kind === 'audioinput');
+            log('Audio input devices:', audioInputs);
+
+            if (audioInputs.length === 0) {
+                console.warn('⚠️  No audio input devices found!');
+            }
+        } catch (e) {
+            console.error('Failed to enumerate devices:', e);
+        }
+    }
 
     function setConnectionStatus(text) {
         connectionStatusEl.textContent = text;
@@ -337,17 +357,34 @@
             // Request microphone access if we don't have it
             if (!localStream) {
                 log('Requesting microphone access...');
-                localStream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                    }
-                });
+
+                // Try with more permissive constraints first
+                try {
+                    localStream = await navigator.mediaDevices.getUserMedia({
+                        audio: {
+                            echoCancellation: false,  // Try disabling first
+                            noiseSuppression: false,
+                            autoGainControl: false,
+                        }
+                    });
+                } catch (e) {
+                    // Fallback to even more basic constraints
+                    console.warn('First attempt failed, trying basic constraints:', e);
+                    localStream = await navigator.mediaDevices.getUserMedia({
+                        audio: true  // Most permissive
+                    });
+                }
                 log('Microphone access granted');
             }
 
-            // Add microphone track to peer connection (this will trigger on_track on server)
+            // Wait for peer connection to be in a stable state
+            if (pc.connectionState !== 'connected' && pc.iceConnectionState !== 'connected') {
+                log('Waiting for peer connection to be ready...');
+                // Wait a bit for connection to stabilize
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+
+            // Add microphone track to peer connection
             const audioTrack = localStream.getAudioTracks()[0];
 
             // Check if we already have a sender for our local audio
@@ -357,6 +394,9 @@
                 // Add the track - this triggers renegotiation
                 sender = pc.addTrack(audioTrack, localStream);
                 log('Added microphone track to peer connection');
+
+                // Wait a moment before creating offer
+                await new Promise(resolve => setTimeout(resolve, 100));
 
                 // Create and send new offer to trigger renegotiation
                 const offer = await pc.createOffer();
@@ -619,6 +659,7 @@
 
     // Auto-connect on page load
     document.addEventListener('DOMContentLoaded', () => {
+        debugMediaDevices();
         log('Auto-connecting to intercom...');
         connect();
     });
