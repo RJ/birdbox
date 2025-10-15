@@ -44,15 +44,27 @@ COPY Cargo.toml Cargo.lock ./
 # Build the application (dependencies already built, so this is fast)
 RUN cargo build --release
 
-# Stage 5: Runtime
-FROM debian:bookworm-slim
+# Stage 5: Extract runtime libraries from Debian
+FROM debian:bookworm-slim as runtime-deps
 
-# Install runtime dependencies
 RUN apt-get update && \
-    apt-get install -y libopus0 ca-certificates && \
+    apt-get install -y libopus0 libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
+# Stage 6: Final runtime with distroless
+FROM gcr.io/distroless/cc-debian12
+
 WORKDIR /app
+
+# Copy the per-arch shared libs using globs that match either:
+#   /usr/lib/aarch64-linux-gnu/…  or  /usr/lib/x86_64-linux-gnu/…
+# This works for both arm64 and amd64 builds without conditional logic.
+COPY --from=runtime-deps /usr/lib/*-linux-gnu/libopus.so.*   /lib/*-linux-gnu/
+COPY --from=runtime-deps /usr/lib/*-linux-gnu/libssl.so.*    /lib/*-linux-gnu/
+COPY --from=runtime-deps /usr/lib/*-linux-gnu/libcrypto.so.* /lib/*-linux-gnu/
+
+# Copy the symlinks that the libraries need (these should exist in the runtime-deps stage)
+#COPY --from=runtime-deps /usr/lib/aarch64-linux-gnu/libopus.so.0 /lib/aarch64-linux-gnu/
 
 # Copy the binary from builder
 COPY --from=builder /usr/src/birdbox-rs/target/release/birdbox-rs .
