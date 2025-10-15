@@ -166,7 +166,7 @@ Birdbox is a WebRTC gateway that bridges DoorBird smart doorbells to web browser
 
 **Buffer Configuration**:
 - Default: 4 frames (~330ms @ 12fps)
-- Configurable via `VIDEO_FANOUT_BUFFER_FRAMES`
+- Configurable via `BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES`
 
 ### 4. WebRTC Infrastructure (`src/webrtc.rs`)
 
@@ -182,8 +182,9 @@ Birdbox is a WebRTC gateway that bridges DoorBird smart doorbells to web browser
 - **Split-Brain DNS**: Optional dual-IP advertising (LAN + public)
 
 **Socket Binding**:
-- Tries to bind to specific IP (from `HOST_IP` or `HOST_IP_LAN`)
-- Falls back to `0.0.0.0` if unbindable (Docker mode)
+- Defaults to `0.0.0.0` (all interfaces) for maximum compatibility
+- Can be overridden with `BIRDBOX_BIND_IP` for specific interface binding
+- Separate from IP advertising (`BIRDBOX_HOST_IP`/`BIRDBOX_HOST_IP_LAN`)
 - Uses SO_REUSEADDR/SO_REUSEPORT for quick rebinding
 
 #### WebRTC Session (`WebRtcSession`)
@@ -350,7 +351,7 @@ DoorBird Device (speaker output)
 
 **Rationale**:
 - Server-client architecture (not peer-to-peer)
-- Server IP explicitly configured (`HOST_IP`)
+- Server IP explicitly configured (`BIRDBOX_HOST_IP`)
 - Both server and clients on same LAN
 - No NAT between server and clients
 - STUN/TURN adds complexity and latency
@@ -367,7 +368,7 @@ DoorBird Device (speaker output)
 - External clients use public IP (NAT forwarding)
 - No dependency on router hairpin NAT
 
-**Configuration**: `HOST_IP` + `HOST_IP_LAN` env vars
+**Configuration**: `BIRDBOX_HOST_IP` + `BIRDBOX_HOST_IP_LAN` env vars
 
 ### 7. Configurable Buffers
 
@@ -380,22 +381,22 @@ DoorBird Device (speaker output)
 - Operator can tune for their specific deployment
 
 **Parameters**:
-- `AUDIO_FANOUT_BUFFER_SAMPLES`: Audio latency vs reliability
-- `VIDEO_FANOUT_BUFFER_FRAMES`: Video latency vs smoothness
-- `RTSP_TRANSPORT_PROTOCOL`: TCP vs UDP reliability
+- `BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES`: Audio latency vs reliability
+- `BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES`: Video latency vs smoothness
+- `BIRDBOX_RTSP_TRANSPORT_PROTOCOL`: TCP vs UDP reliability
 
 ## Module Responsibilities
 
-| Module | Responsibility | Key Types |
-|--------|---------------|-----------|
-| `main.rs` | Application orchestration, routing | `AppState`, `PttState` |
-| `doorbird/` | DoorBird API client library | `Client`, `DeviceInfo` |
-| `audio_fanout.rs` | Audio connection lifecycle | `AudioFanout`, `OpusSample` |
-| `video_fanout.rs` | Video connection lifecycle | `VideoFanout`, `H264Packet` |
-| `audio_transcode.rs` | Bidirectional audio conversion | `AudioTranscoder`, `ReverseAudioTranscoder` |
-| `h264_extractor.rs` | RTSP H.264 extraction | `H264Extractor`, `H264Packet` |
-| `webrtc.rs` | WebRTC infrastructure | `WebRtcInfra`, `WebRtcSession` |
-| `g711.rs` | G.711 μ-law codec | `encode_ulaw()`, `decode_ulaw()` |
+| Module               | Responsibility                     | Key Types                                   |
+| -------------------- | ---------------------------------- | ------------------------------------------- |
+| `main.rs`            | Application orchestration, routing | `AppState`, `PttState`                      |
+| `doorbird/`          | DoorBird API client library        | `Client`, `DeviceInfo`                      |
+| `audio_fanout.rs`    | Audio connection lifecycle         | `AudioFanout`, `OpusSample`                 |
+| `video_fanout.rs`    | Video connection lifecycle         | `VideoFanout`, `H264Packet`                 |
+| `audio_transcode.rs` | Bidirectional audio conversion     | `AudioTranscoder`, `ReverseAudioTranscoder` |
+| `h264_extractor.rs`  | RTSP H.264 extraction              | `H264Extractor`, `H264Packet`               |
+| `webrtc.rs`          | WebRTC infrastructure              | `WebRtcInfra`, `WebRtcSession`              |
+| `g711.rs`            | G.711 μ-law codec                  | `encode_ulaw()`, `decode_ulaw()`            |
 
 ## Error Handling Strategy
 

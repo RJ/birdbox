@@ -132,16 +132,16 @@ birdbox/
 
 ### Module Responsibilities
 
-| Module | Purpose | Key Types |
-|--------|---------|-----------|
-| `main.rs` | App orchestration, HTTP server | `AppState`, `PttState` |
-| `doorbird/` | DoorBird API client library | `Client`, `DeviceInfo` |
-| `audio_fanout.rs` | Audio streaming lifecycle | `AudioFanout`, `OpusSample` |
-| `video_fanout.rs` | Video streaming lifecycle | `VideoFanout`, `H264Packet` |
-| `audio_transcode.rs` | Audio codec conversion | `AudioTranscoder` |
-| `h264_extractor.rs` | RTSP video extraction | `H264Extractor` |
-| `webrtc.rs` | WebRTC peer connections | `WebRtcInfra`, `WebRtcSession` |
-| `g711.rs` | G.711 μ-law codec | Functions |
+| Module               | Purpose                        | Key Types                      |
+| -------------------- | ------------------------------ | ------------------------------ |
+| `main.rs`            | App orchestration, HTTP server | `AppState`, `PttState`         |
+| `doorbird/`          | DoorBird API client library    | `Client`, `DeviceInfo`         |
+| `audio_fanout.rs`    | Audio streaming lifecycle      | `AudioFanout`, `OpusSample`    |
+| `video_fanout.rs`    | Video streaming lifecycle      | `VideoFanout`, `H264Packet`    |
+| `audio_transcode.rs` | Audio codec conversion         | `AudioTranscoder`              |
+| `h264_extractor.rs`  | RTSP video extraction          | `H264Extractor`                |
+| `webrtc.rs`          | WebRTC peer connections        | `WebRtcInfra`, `WebRtcSession` |
+| `g711.rs`            | G.711 μ-law codec              | Functions                      |
 
 ### Dependency Graph
 
@@ -389,8 +389,8 @@ export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 # Check logs for ICE candidates
 RUST_LOG=debug cargo run
 
-# Verify HOST_IP is correct
-echo $HOST_IP
+# Verify BIRDBOX_HOST_IP is correct
+echo $BIRDBOX_HOST_IP
 ifconfig  # or: ip addr show
 
 # Test UDP port

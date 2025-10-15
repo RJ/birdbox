@@ -2,13 +2,13 @@
 
 ## Project Context
 
-This is **Birdbox**, a WebRTC gateway for DoorBird smart doorbells. It streams audio/video from DoorBird devices to web browsers with low latency and supports push-to-talk communication.
+This is **Birdbox**, a WebRTC and API gateway for DoorBird smart doorbells. It streams audio/video from DoorBird devices to web browsers with low latency and supports push-to-talk communication.
 
 ## Build & Development Rules
 
 - **Don't build in --release mode** unless explicitly asked - we stick to dev builds for development
 - Use **"docker compose"** (NOT "docker-compose") - we use the modern Docker Compose V2
-- The **host machine is a Mac** - consider macOS-specific behaviors
+- The host machine is a Mac for developing, and linux (typically ubuntu) for deployment. Consider the implications. For example, docker on mac has no host networking mode.
 
 ## Documentation Structure
 
@@ -47,10 +47,10 @@ All technical documentation is in the **`docs/`** folder:
 ## Configuration
 
 All configuration is via environment variables in `.env`:
-- `DOORBIRD_*`: DoorBird device connection
-- `HOST_IP` / `HOST_IP_LAN`: WebRTC IP advertising (split-brain DNS support)
-- `*_BUFFER_*`: Latency vs reliability tuning
-- `RTSP_TRANSPORT_PROTOCOL`: TCP (reliable) vs UDP (low latency)
+- `BIRDBOX_DOORBIRD_*`: DoorBird device connection
+- `BIRDBOX_HOST_IP` / `BIRDBOX_HOST_IP_LAN`: WebRTC IP advertising (split-brain DNS support)
+- `BIRDBOX_*_BUFFER_*`: Latency vs reliability tuning
+- `BIRDBOX_RTSP_TRANSPORT_PROTOCOL`: TCP (reliable) vs UDP (low latency)
 
 See `env.example` for full documentation of all options.
 
@@ -72,7 +72,7 @@ See `env.example` for full documentation of all options.
 ## Common Gotchas
 
 - **Docker UDP mapping**: Must include `/udp` suffix in `docker-compose.yml`
-- **HOST_IP required**: For Docker deployments, must set to host's LAN IP
+- **BIRDBOX_HOST_IP required**: For Docker deployments, must set to host's LAN IP
 - **ffmpeg options**: `nobuffer` and `low_delay` flags are critical for latency
 - **DoorBird limits**: Only one API client at a time; official app has precedence
 - **Resampler latency**: `sinc_len: 256` trades quality for ~32ms delay

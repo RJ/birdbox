@@ -8,23 +8,23 @@ use futures_util::stream::StreamExt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tokio::sync::{mpsc::UnboundedSender, Mutex};
 use tracing::{error, info, warn};
 use uuid::Uuid;
-use webrtc::api::API;
+use webrtc::api::media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_OPUS};
 use webrtc::api::APIBuilder;
-use webrtc::api::media_engine::{MIME_TYPE_H264, MIME_TYPE_OPUS, MediaEngine};
+use webrtc::api::API;
 use webrtc::ice::udp_mux::*;
 use webrtc::ice::udp_network::UDPNetwork;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
-use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::track::track_local::TrackLocal;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
+use webrtc::track::track_local::TrackLocal;
 
 /// Auto-detect the local LAN IP address
 /// Returns the first non-loopback IPv4 address found on any network interface
@@ -77,6 +77,9 @@ async fn bind_udp_socket(addr: &str) -> Result<UdpSocket> {
 /// Shared WebRTC infrastructure - created once at startup and shared across all sessions
 pub struct WebRtcInfra {
     api: API,
+    // Keep the UDP mux alive to prevent "buffer: closed" errors
+    // The mux owns the UDP socket, so keeping the mux alive keeps the socket alive
+    _udp_mux: Arc<UDPMuxDefault>,
 }
 
 impl WebRtcInfra {
@@ -106,17 +109,17 @@ impl WebRtcInfra {
         // 3. NAT 1:1 mapping - Advertises external IP for Docker deployments
         //
         // Supports split-brain DNS / dual network topology:
-        // - HOST_IP: Public/primary IP for external clients
-        // - HOST_IP_LAN: LAN IP for internal clients (optional)
+        // - BIRDBOX_HOST_IP: Public/primary IP for external clients
+        // - BIRDBOX_HOST_IP_LAN: LAN IP for internal clients (optional)
         // - If both set, both IPs advertised → WebRTC auto-selects best route
         // ═══════════════════════════════════════════════════════════════════════════
 
         // Determine which IP(s) to advertise for WebRTC ICE candidates
-        let host_ip = if let Ok(ip) = std::env::var("HOST_IP") {
-            info!("🌐 Using HOST_IP from environment: {}", ip);
+        let host_ip = if let Ok(ip) = std::env::var("BIRDBOX_HOST_IP") {
+            info!("🌐 Using BIRDBOX_HOST_IP from environment: {}", ip);
             ip
         } else {
-            // Auto-detect LAN IP when HOST_IP not set (for non-Docker deployments)
+            // Auto-detect LAN IP when BIRDBOX_HOST_IP not set (for non-Docker deployments)
             match get_local_ip() {
                 Some(ip) => {
                     info!("🌐 Auto-detected local IP: {}", ip);
@@ -130,21 +133,27 @@ impl WebRtcInfra {
         };
 
         // Check for optional LAN IP for dual-network setups
-        let host_ip_lan = std::env::var("HOST_IP_LAN").ok();
+        let host_ip_lan = std::env::var("BIRDBOX_HOST_IP_LAN").ok();
 
         // Use UDP mux to multiplex all WebRTC traffic over a single UDP port
-        let udp_port = std::env::var("UDP_PORT")
+        let udp_port = std::env::var("BIRDBOX_UDP_PORT")
             .ok()
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(50000);
 
         // Build list of IPs to advertise as ICE candidates
-        // Priority order: try LAN IP first for binding (more likely to work), then public IP
         let mut advertised_ips = Vec::new();
 
-        // Try to determine which IP to bind to (LAN IP is more likely to be bindable)
-        let bind_ip_candidate = host_ip_lan.as_ref().unwrap_or(&host_ip);
-        let bind_addr = format!("{}:{}", bind_ip_candidate, udp_port);
+        // Determine bind address: default to 0.0.0.0 for maximum compatibility
+        // This allows connections from localhost, LAN, and external networks
+        // Advanced users can override with BIRDBOX_BIND_IP to restrict to a specific interface
+        let bind_addr = if let Ok(bind_ip) = std::env::var("BIRDBOX_BIND_IP") {
+            info!("🌐 Using BIRDBOX_BIND_IP from environment: {}", bind_ip);
+            format!("{}:{}", bind_ip, udp_port)
+        } else {
+            // Default: bind to all interfaces (localhost + LAN + external)
+            format!("0.0.0.0:{}", udp_port)
+        };
 
         let udp_socket = match bind_udp_socket(&bind_addr).await {
             Ok(socket) => {
@@ -155,12 +164,11 @@ impl WebRtcInfra {
                 socket
             }
             Err(e) => {
-                info!(
-                    "🌐 {} is unbindable, using 0.0.0.0:{} instead – probably in Docker. [{}]",
-                    bind_addr, udp_port, e
+                anyhow::bail!(
+                    "Failed to bind WebRTC UDP socket to {}: {}. \
+                    Check if the port is already in use or if BIRDBOX_BIND_IP is set to an invalid address.",
+                    bind_addr, e
                 );
-                let fallback_addr = format!("0.0.0.0:{}", udp_port);
-                bind_udp_socket(&fallback_addr).await?
             }
         };
 
@@ -168,8 +176,11 @@ impl WebRtcInfra {
         // In dual-IP mode, advertise both; in single-IP mode, advertise one
         if let Some(lan_ip) = &host_ip_lan {
             // Dual-IP mode: advertise both LAN and public IPs
-            advertised_ips.push(lan_ip.clone());
-            if &host_ip != lan_ip && host_ip != "0.0.0.0" {
+            // Filter out localhost (127.0.0.1) from NAT mapping as it's not a valid external IP
+            if lan_ip != "127.0.0.1" && lan_ip != "::1" {
+                advertised_ips.push(lan_ip.clone());
+            }
+            if &host_ip != lan_ip && host_ip != "0.0.0.0" && host_ip != "127.0.0.1" {
                 advertised_ips.push(host_ip.clone());
             }
             info!(
@@ -177,8 +188,8 @@ impl WebRtcInfra {
                 advertised_ips.len(),
                 advertised_ips
             );
-        } else if host_ip != "0.0.0.0" {
-            // Single-IP mode: advertise only HOST_IP
+        } else if host_ip != "0.0.0.0" && host_ip != "127.0.0.1" {
+            // Single-IP mode: advertise only BIRDBOX_HOST_IP
             advertised_ips.push(host_ip.clone());
             info!(
                 "🌐 Single-network mode: advertising ICE candidate: {}",
@@ -191,7 +202,7 @@ impl WebRtcInfra {
         }
 
         let udp_mux = UDPMuxDefault::new(UDPMuxParams::new(udp_socket));
-        setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux));
+        setting_engine.set_udp_network(UDPNetwork::Muxed(udp_mux.clone()));
 
         // Disable mDNS to prevent .local candidates when we have specific IPs to advertise
         if !advertised_ips.is_empty() {
@@ -203,7 +214,12 @@ impl WebRtcInfra {
         // Set NAT 1:1 mapping to advertise our configured IP(s)
         // This tells WebRTC to advertise these IPs as host candidates
         // In dual-IP mode, both IPs are advertised and the client will try both
-        if !advertised_ips.is_empty() {
+        // Skip NAT mapping if only localhost IPs are configured (for local testing)
+        let has_non_localhost_ips = advertised_ips
+            .iter()
+            .any(|ip| ip != "127.0.0.1" && ip != "::1");
+
+        if !advertised_ips.is_empty() && has_non_localhost_ips {
             info!(
                 "🌐 Setting NAT 1:1 mapping to advertise {} IP(s) as ICE candidates",
                 advertised_ips.len()
@@ -212,7 +228,15 @@ impl WebRtcInfra {
                 advertised_ips,
                 webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType::Host,
             );
+        } else if !advertised_ips.is_empty() {
+            info!(
+                "🌐 Skipping NAT 1:1 mapping for localhost-only configuration ({} IPs)",
+                advertised_ips.len()
+            );
         }
+
+        // Note: No ICE candidate pool configuration needed
+        // The empty ice_servers list and NAT 1:1 mapping should prevent STUN usage
 
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
@@ -220,7 +244,10 @@ impl WebRtcInfra {
             .with_setting_engine(setting_engine)
             .build();
 
-        Ok(Arc::new(Self { api }))
+        Ok(Arc::new(Self {
+            api,
+            _udp_mux: udp_mux,
+        }))
     }
 }
 
@@ -262,7 +289,10 @@ impl WebRtcSession {
     ) -> Result<Self> {
         // No STUN/TURN servers needed for client-server architecture
         // where server has known IP and client connects directly
-        let cfg = RTCConfiguration::default();
+        let cfg = RTCConfiguration {
+            ice_servers: vec![], // Explicitly disable STUN/TURN servers
+            ..RTCConfiguration::default()
+        };
 
         let pc = Arc::new(infra.api.new_peer_connection(cfg).await?);
 

@@ -17,13 +17,13 @@
 use askama::Template;
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::Html;
-use axum::{Router, extract::ws::WebSocketUpgrade, response::IntoResponse, routing::get};
+use axum::{extract::ws::WebSocketUpgrade, response::IntoResponse, routing::get, Router};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tower_http::services::ServeDir;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 mod audio_fanout;
@@ -145,15 +145,15 @@ async fn main() {
         .init();
 
     // Read DoorBird configuration from environment
-    let doorbird_url =
-        std::env::var("DOORBIRD_URL").expect("DOORBIRD_URL environment variable must be set");
-    let doorbird_user =
-        std::env::var("DOORBIRD_USER").expect("DOORBIRD_USER environment variable must be set");
-    let doorbird_password = std::env::var("DOORBIRD_PASSWORD")
-        .expect("DOORBIRD_PASSWORD environment variable must be set");
+    let doorbird_url = std::env::var("BIRDBOX_DOORBIRD_URL")
+        .expect("BIRDBOX_DOORBIRD_URL environment variable must be set");
+    let doorbird_user = std::env::var("BIRDBOX_DOORBIRD_USER")
+        .expect("BIRDBOX_DOORBIRD_USER environment variable must be set");
+    let doorbird_password = std::env::var("BIRDBOX_DOORBIRD_PASSWORD")
+        .expect("BIRDBOX_DOORBIRD_PASSWORD environment variable must be set");
 
     // Read video configuration from environment
-    let video_buffer_frames = std::env::var("VIDEO_FANOUT_BUFFER_FRAMES")
+    let video_buffer_frames = std::env::var("BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(4); // Default to 4 frames if not set or invalid
@@ -260,7 +260,7 @@ async fn main() {
     info!("RTSP URL configured for video streaming");
 
     // Create audio fanout system with configurable buffer size
-    let audio_buffer_samples = std::env::var("AUDIO_FANOUT_BUFFER_SAMPLES")
+    let audio_buffer_samples = std::env::var("BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(20); // Default to 20 samples (~400ms) if not set or invalid
@@ -272,7 +272,7 @@ async fn main() {
     let audio_fanout = AudioFanout::new(doorbird_client.clone(), audio_buffer_samples);
 
     // Read RTSP transport protocol configuration
-    let rtsp_transport = std::env::var("RTSP_TRANSPORT_PROTOCOL")
+    let rtsp_transport = std::env::var("BIRDBOX_RTSP_TRANSPORT_PROTOCOL")
         .unwrap_or_else(|_| "udp".to_string())
         .to_lowercase();
 
@@ -457,9 +457,12 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     // Stop PTT forward task
     ptt_forward_task.abort();
 
-    if let Err(e) = session.pc.close().await {
-        error!("Error closing peer connection: {:#}", e);
-    }
+    // Don't explicitly close the peer connection to avoid affecting the shared UDP mux
+    // The peer connection will be garbage collected when the session is dropped
+    info!(
+        "Session {} cleanup complete, peer connection will be garbage collected",
+        session_id
+    );
 }
 
 /// Handle WebRTC signaling messages from the client
@@ -509,10 +512,19 @@ async fn handle_signal_text(
                 .get("sdpMLineIndex")
                 .and_then(|i| i.as_u64())
                 .map(|u| u as u16);
-            info!(
-                "received client ICE candidate: {} (mid: {:?}, mline: {:?})",
-                candidate, sdp_mid, sdp_mline_index
-            );
+
+            // Log mDNS candidates at debug level to reduce spam (they're ignored anyway)
+            if candidate.contains(".local") {
+                debug!(
+                    "received client ICE candidate (mDNS): {} (mid: {:?}, mline: {:?})",
+                    candidate, sdp_mid, sdp_mline_index
+                );
+            } else {
+                info!(
+                    "received client ICE candidate: {} (mid: {:?}, mline: {:?})",
+                    candidate, sdp_mid, sdp_mline_index
+                );
+            }
             session
                 .add_ice_candidate(candidate, sdp_mid, sdp_mline_index)
                 .await?;

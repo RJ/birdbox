@@ -31,18 +31,18 @@ Create a `.env` file in the project root:
 
 ```bash
 # DoorBird Configuration
-DOORBIRD_URL=http://192.168.1.100
-DOORBIRD_USER=your_username
-DOORBIRD_PASSWORD=your_password
+BIRDBOX_DOORBIRD_URL=http://192.168.1.100
+BIRDBOX_DOORBIRD_USER=your_username
+BIRDBOX_DOORBIRD_PASSWORD=your_password
 
 # WebRTC Configuration
-HOST_IP=192.168.1.50          # Your Docker host's IP address
-UDP_PORT=50000                # WebRTC media port
+BIRDBOX_HOST_IP=192.168.1.50          # Your Docker host's IP address
+BIRDBOX_UDP_PORT=50000                # WebRTC media port
 
 # Optional: Latency tuning (defaults shown)
-AUDIO_FANOUT_BUFFER_SAMPLES=20    # ~400ms audio latency
-VIDEO_FANOUT_BUFFER_FRAMES=4      # ~330ms video latency
-RTSP_TRANSPORT_PROTOCOL=udp       # or "tcp" for VPN/complex networks
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=20    # ~400ms audio latency
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=4      # ~330ms video latency
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=udp       # or "tcp" for VPN/complex networks
 
 # Logging
 RUST_LOG=info
@@ -114,24 +114,24 @@ Open in your browser:
 
 For optimal performance:
 - Place Docker host and DoorBird on the same LAN segment
-- Configure `HOST_IP` to your Docker host's LAN IP
+- Configure `BIRDBOX_HOST_IP` to your Docker host's LAN IP
 - Ensure UDP port 50000 is not blocked by firewall
 
 ### Latency Tuning
 
 **Audio latency** (default: ~400ms):
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=20  # Lower = less latency, more dropouts
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=20  # Lower = less latency, more dropouts
 ```
 
 **Video latency** (default: ~330ms):
 ```bash
-VIDEO_FANOUT_BUFFER_FRAMES=4    # Lower = less latency, more frame drops
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=4    # Lower = less latency, more frame drops
 ```
 
 **Network reliability** (VPN/Docker):
 ```bash
-RTSP_TRANSPORT_PROTOCOL=tcp     # Use TCP for VPN scenarios
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp     # Use TCP for VPN scenarios
 ```
 
 See [docs/LATENCY.md](docs/LATENCY.md) for detailed tuning guide.
@@ -139,7 +139,7 @@ See [docs/LATENCY.md](docs/LATENCY.md) for detailed tuning guide.
 ## Troubleshooting
 
 ### WebRTC Connection Fails
-- Verify `HOST_IP` is set to your Docker host's actual LAN IP
+- Verify `BIRDBOX_HOST_IP` is set to your Docker host's actual LAN IP
 - Check that UDP port 50000 is not blocked by firewall
 - Ensure browser and Docker host are on the same network
 - Check logs: `docker compose logs -f birdbox`

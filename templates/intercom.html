@@ -443,15 +443,24 @@
 
         pc.onicecandidate = (e) => {
             if (e.candidate) {
-                log('local ICE candidate:', {
-                    candidate: e.candidate.candidate,
-                    sdpMid: e.candidate.sdpMid,
-                    sdpMLineIndex: e.candidate.sdpMLineIndex,
-                    type: e.candidate.type,
-                    protocol: e.candidate.protocol,
-                    address: e.candidate.address,
-                    port: e.candidate.port
-                });
+                // Filter out mDNS candidates from browser console logging (they're ignored by server anyway)
+                if (!e.candidate.address || !e.candidate.address.includes('.local')) {
+                    log('local ICE candidate:', {
+                        candidate: e.candidate.candidate,
+                        sdpMid: e.candidate.sdpMid,
+                        sdpMLineIndex: e.candidate.sdpMLineIndex,
+                        type: e.candidate.type,
+                        protocol: e.candidate.protocol,
+                        address: e.candidate.address,
+                        port: e.candidate.port
+                    });
+                } else {
+                    // Log mDNS candidates at debug level (only visible with console.debug enabled)
+                    console.debug('[webrtc] local ICE candidate (mDNS):', {
+                        candidate: e.candidate.candidate,
+                        address: e.candidate.address
+                    });
+                }
                 socket.send(JSON.stringify({
                     type: 'candidate',
                     candidate: e.candidate.candidate,

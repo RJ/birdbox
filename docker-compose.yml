@@ -20,6 +20,7 @@ services:
     build: .
     container_name: birdbox-rs
     ports:
+      - "3000:3000"
       # Single UDP port for WebRTC media (using UDP mux)
       - "50000:50000/udp"
     env_file:

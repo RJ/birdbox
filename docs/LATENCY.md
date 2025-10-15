@@ -55,7 +55,7 @@ This is the broadcast channel buffer between the transcoder and WebRTC sessions.
 
 ```bash
 # Environment variable
-AUDIO_FANOUT_BUFFER_SAMPLES=20
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=20
 ```
 
 **Purpose**: Absorbs timing variations and prevents audio dropouts when:
@@ -67,33 +67,33 @@ AUDIO_FANOUT_BUFFER_SAMPLES=20
 
 #### Buffer Size Trade-offs
 
-| Buffer Size | Latency | Characteristics |
-|------------|---------|-----------------|
-| 5 samples  | 100ms   | **Minimum** - High risk of crackling/dropouts |
-| 10 samples | 200ms   | **Aggressive** - May crackle under load |
-| 20 samples | 400ms   | **Default** - Good balance for intercom |
-| 30 samples | 600ms   | **Conservative** - Very smooth, noticeable delay |
-| 50 samples | 1000ms  | **High** - Echo-like delay in conversation |
+| Buffer Size | Latency | Characteristics                                  |
+| ----------- | ------- | ------------------------------------------------ |
+| 5 samples   | 100ms   | **Minimum** - High risk of crackling/dropouts    |
+| 10 samples  | 200ms   | **Aggressive** - May crackle under load          |
+| 20 samples  | 400ms   | **Default** - Good balance for intercom          |
+| 30 samples  | 600ms   | **Conservative** - Very smooth, noticeable delay |
+| 50 samples  | 1000ms  | **High** - Echo-like delay in conversation       |
 
 #### Recommended Settings
 
 **For Minimum Latency** (competitive intercom feel):
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=10  # 200ms
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=10  # 200ms
 ```
 - **Risk**: May crackle on slower devices or under CPU load
 - **Best for**: Powerful servers, low-latency priority
 
 **For Maximum Reliability** (smooth audio):
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=30  # 600ms
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=30  # 600ms
 ```
 - **Benefits**: Very smooth, resilient to temporary issues
 - **Trade-off**: Noticeable delay in conversation flow
 
 **For Production Intercom**:
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=20  # 400ms (default)
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=20  # 400ms (default)
 ```
 - **Balance**: Acceptable delay with good reliability
 - **Recommended**: Start here, adjust based on experience
@@ -174,7 +174,7 @@ This prevents latency accumulation but means timing is approximate.
 
 ```bash
 # Environment variable
-VIDEO_FANOUT_BUFFER_FRAMES=4
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=4
 ```
 
 **Previous default**: 30 frames (~2.5 seconds) - too high for intercom use
@@ -196,33 +196,33 @@ VIDEO_FANOUT_BUFFER_FRAMES=4
 
 #### Buffer Size Trade-offs
 
-| Buffer Size | Latency @12fps | Characteristics |
-|------------|----------------|-----------------|
-| 1 frame    | ~83ms          | **Minimum** - Frequent frame drops |
-| 3 frames   | ~250ms         | **Aggressive** - Occasional stuttering |
-| 4 frames   | ~330ms         | **Default** - Good balance |
-| 5 frames   | ~420ms         | **Conservative** - Very smooth |
-| 10 frames  | ~830ms         | **High** - Noticeable delay |
+| Buffer Size | Latency @12fps | Characteristics                        |
+| ----------- | -------------- | -------------------------------------- |
+| 1 frame     | ~83ms          | **Minimum** - Frequent frame drops     |
+| 3 frames    | ~250ms         | **Aggressive** - Occasional stuttering |
+| 4 frames    | ~330ms         | **Default** - Good balance             |
+| 5 frames    | ~420ms         | **Conservative** - Very smooth         |
+| 10 frames   | ~830ms         | **High** - Noticeable delay            |
 
 #### Recommended Settings
 
 **For Minimum Latency** (doorbell reaction time priority):
 ```bash
-VIDEO_FANOUT_BUFFER_FRAMES=3  # ~250ms
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=3  # ~250ms
 ```
 - **Risk**: More frame drops under load, occasional stuttering
 - **Best for**: Fast networks, latency-critical scenarios
 
 **For Maximum Smoothness** (video quality priority):
 ```bash
-VIDEO_FANOUT_BUFFER_FRAMES=5  # ~420ms
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=5  # ~420ms
 ```
 - **Benefits**: Very smooth video, resilient to frame timing variations
 - **Trade-off**: Slight additional delay
 
 **For Production Use**:
 ```bash
-VIDEO_FANOUT_BUFFER_FRAMES=4  # ~330ms (default)
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=4  # ~330ms (default)
 ```
 - **Balance**: Acceptable latency with reliable video
 - **Recommended**: Start here, adjust based on experience
@@ -233,7 +233,7 @@ VIDEO_FANOUT_BUFFER_FRAMES=4  # ~330ms (default)
 
 **UDP Transport** (default):
 ```bash
-RTSP_TRANSPORT_PROTOCOL=udp
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=udp
 ```
 - **Latency**: 10-20ms lower than TCP
 - **Reliability**: May have packet loss over WiFi
@@ -241,7 +241,7 @@ RTSP_TRANSPORT_PROTOCOL=udp
 
 **TCP Transport** (recommended for complex networks):
 ```bash
-RTSP_TRANSPORT_PROTOCOL=tcp
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp
 ```
 - **Latency**: 10-20ms higher than UDP
 - **Reliability**: Much more reliable
@@ -278,14 +278,14 @@ The browser's WebRTC implementation automatically adapts its jitter buffer based
 
 **Context for acceptable latency**:
 
-| System | Typical Latency | Use Case |
-|--------|----------------|----------|
-| Telephone | 20-50ms | Real-time conversation |
-| VoIP (good) | 150ms | Acceptable for conversation |
-| VoIP (acceptable) | 150-400ms | Noticeable but usable |
-| **Birdbox Audio** | **400-500ms** | Doorbell/intercom (one-way primary) |
-| **Birdbox Video** | **450-900ms** | Visual identification |
-| Satellite phone | 500-700ms | Frustrating but functional |
+| System            | Typical Latency | Use Case                            |
+| ----------------- | --------------- | ----------------------------------- |
+| Telephone         | 20-50ms         | Real-time conversation              |
+| VoIP (good)       | 150ms           | Acceptable for conversation         |
+| VoIP (acceptable) | 150-400ms       | Noticeable but usable               |
+| **Birdbox Audio** | **400-500ms**   | Doorbell/intercom (one-way primary) |
+| **Birdbox Video** | **450-900ms**   | Visual identification               |
+| Satellite phone   | 500-700ms       | Frustrating but functional          |
 
 **Human perception**:
 - < 150ms: Feels real-time
@@ -334,9 +334,9 @@ Useful metrics for future monitoring:
 - ✅ Fixed WebRTC sample duration (no timestamp drift)
 
 **Tunable Parameters**:
-- 🔧 `AUDIO_FANOUT_BUFFER_SAMPLES`: Lower = less latency, more dropouts
-- 🔧 `VIDEO_FANOUT_BUFFER_FRAMES`: Lower = less latency, more frame drops
-- 🔧 `RTSP_TRANSPORT_PROTOCOL`: TCP for reliability, UDP for latency
+- 🔧 `BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES`: Lower = less latency, more dropouts
+- 🔧 `BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES`: Lower = less latency, more frame drops
+- 🔧 `BIRDBOX_RTSP_TRANSPORT_PROTOCOL`: TCP for reliability, UDP for latency
 
 **Not Recommended** (diminishing returns):
 - ❌ Reducing resampler quality (audio degradation)
@@ -354,30 +354,30 @@ Useful metrics for future monitoring:
 
 **Home Network (WiFi, standard router)**:
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=20
-VIDEO_FANOUT_BUFFER_FRAMES=4
-RTSP_TRANSPORT_PROTOCOL=udp
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=20
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=4
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=udp
 ```
 
 **VPN / Complex Network (Tailscale, WireGuard)**:
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=30
-VIDEO_FANOUT_BUFFER_FRAMES=5
-RTSP_TRANSPORT_PROTOCOL=tcp
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=30
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=5
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp
 ```
 
 **Data Center / Wired LAN (minimal latency)**:
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=10
-VIDEO_FANOUT_BUFFER_FRAMES=3
-RTSP_TRANSPORT_PROTOCOL=udp
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=10
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=3
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=udp
 ```
 
 **Low-End Hardware (Raspberry Pi, etc.)**:
 ```bash
-AUDIO_FANOUT_BUFFER_SAMPLES=30
-VIDEO_FANOUT_BUFFER_FRAMES=5
-RTSP_TRANSPORT_PROTOCOL=tcp
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=30
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=5
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp
 ```
 
 ## Conclusion

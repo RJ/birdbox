@@ -23,8 +23,8 @@ Browser Client ←→ WebRTC Server (Rust) ←→ DoorBird Device
 
 **STUN servers** help peers discover their public IP addresses when behind NAT. We don't need this because:
 
-1. **Server has known address**: The server IP is explicitly configured via `HOST_IP` environment variable or auto-detected
-2. **Same host as web server**: If the browser can reach `http://HOST_IP/intercom`, it can reach `udp://HOST_IP:50000`
+1. **Server has known address**: The server IP is explicitly configured via `BIRDBOX_HOST_IP` environment variable or auto-detected
+2. **Same host as web server**: If the browser can reach `http://BIRDBOX_HOST_IP/intercom`, it can reach `udp://BIRDBOX_HOST_IP:50000`
 3. **Client-server model**: We're not doing P2P between two browsers behind different NATs
 4. **Explicit ICE candidates**: Server advertises its specific IP address via NAT 1:1 mapping
 5. **Fixed port mapping**: UDP port is predictable and accessible (mapped through Docker if needed)
@@ -101,17 +101,28 @@ setting_engine.set_nat_1to1_ips(
 
 **Use case**: Container binds to 0.0.0.0 but advertises host's external IP
 
-### Auto-Detection & Fallback
+### Binding vs Advertising
 
-**Native Deployment** (no HOST_IP set):
-- Auto-detects LAN IP using UDP socket trick (connects to 8.8.8.8 to determine routing interface)
-- Binds directly to detected IP
+The server separates **binding** (which interface to listen on) from **advertising** (which IP to tell clients):
+
+**Binding** (controlled by `BIRDBOX_BIND_IP`, defaults to `0.0.0.0`):
+- `0.0.0.0` (default): Listen on all interfaces - works with localhost, LAN, and external
+- Specific IP: Restrict to one interface (advanced use case)
+
+**Advertising** (controlled by `BIRDBOX_HOST_IP` and `BIRDBOX_HOST_IP_LAN`):
+- Tells WebRTC clients which IP address(es) to connect to
+- Auto-detected if not set (uses UDP socket trick to 8.8.8.8)
+- Can advertise multiple IPs in dual-network mode
+
+**Native Deployment** (no env vars set):
+- Binds to 0.0.0.0 (all interfaces)
+- Auto-detects and advertises LAN IP
 - Logs: `"Auto-detected local IP: 10.0.0.X"`
 
-**Docker Deployment** (HOST_IP set to external IP):
-- Attempts to bind to HOST_IP
-- If fails (container doesn't have that IP), falls back to 0.0.0.0 with NAT 1:1 mapping
-- Logs: `"Could not bind to X.X.X.X, binding to 0.0.0.0 instead (Docker mode)"`
+**Docker Deployment** (BIRDBOX_HOST_IP set):
+- Binds to 0.0.0.0 (default - allows port mapping to work)
+- Advertises BIRDBOX_HOST_IP via NAT 1:1 mapping
+- Logs: `"Bound WebRTC UDP socket to 0.0.0.0:50000"`
 
 ### Result
 
@@ -145,10 +156,10 @@ Set both environment variables:
 
 ```bash
 # Public IP for external clients
-HOST_IP=203.0.113.50
+BIRDBOX_HOST_IP=203.0.113.50
 
 # Private LAN IP for internal clients
-HOST_IP_LAN=192.168.1.154
+BIRDBOX_HOST_IP_LAN=192.168.1.154
 ```
 
 **Behavior**:
@@ -194,10 +205,10 @@ Browser (LAN) → macOS Host → Docker VM → Linux Container (Rust app)
 - Container sees its internal Docker IP (172.x.x.x)
 - macOS host has LAN IP (e.g., 10.0.0.154)
 - Browser needs to connect to LAN IP, not container IP
-- Must use `HOST_IP` environment variable to advertise correct external IP
+- Must use `BIRDBOX_HOST_IP` environment variable to advertise correct external IP
 
 **3. Bind Address Limitation**:
-- Container cannot bind directly to `HOST_IP` (doesn't own that interface)
+- Container cannot bind directly to `BIRDBOX_HOST_IP` (doesn't own that interface)
 - Must bind to `0.0.0.0` inside container
 - Use NAT 1:1 mapping to advertise external IP in ICE candidates
 
@@ -206,9 +217,9 @@ Browser (LAN) → macOS Host → Docker VM → Linux Container (Rust app)
 **Location**: `src/webrtc.rs`, lines 115-145
 
 1. Container binds to `0.0.0.0:50000` (listens on all container interfaces)
-2. `HOST_IP` environment variable set to macOS LAN IP (e.g., 10.0.0.154)
-3. WebRTC NAT 1:1 mapping advertises `HOST_IP` in ICE candidates
-4. Docker's port mapping forwards `HOST_IP:50000` → container's `0.0.0.0:50000`
+2. `BIRDBOX_HOST_IP` environment variable set to macOS LAN IP (e.g., 10.0.0.154)
+3. WebRTC NAT 1:1 mapping advertises `BIRDBOX_HOST_IP` in ICE candidates
+4. Docker's port mapping forwards `BIRDBOX_HOST_IP:50000` → container's `0.0.0.0:50000`
 5. Browser connects to `10.0.0.154:50000`, Docker routes to container
 
 **Why this works without STUN**:
@@ -238,11 +249,11 @@ ports:
 ## Network Verification
 
 **If the browser can successfully:**
-- Load the web page at `http://HOST_IP:PORT/intercom`
+- Load the web page at `http://BIRDBOX_HOST_IP:PORT/intercom`
 - Establish WebSocket connection for signaling
 
 **Then it will also be able to:**
-- Reach WebRTC endpoint at `udp://HOST_IP:50000`
+- Reach WebRTC endpoint at `udp://BIRDBOX_HOST_IP:50000`
 - Stream audio/video without STUN
 
 The WebRTC connection is **no more complex** than the HTTP connection - it's just UDP instead of TCP to the same host.
@@ -260,11 +271,11 @@ The WebRTC connection is **no more complex** than the HTTP connection - it's jus
 
 **Common Causes**:
 
-**Wrong HOST_IP configured**:
+**Wrong BIRDBOX_HOST_IP configured**:
 ```bash
 # Check what IP browser is trying to connect to
 # Should match your server's LAN IP
-echo $HOST_IP
+echo $BIRDBOX_HOST_IP
 ip addr show  # or: ifconfig
 ```
 
@@ -275,7 +286,7 @@ netstat -an | grep 50000
 # or: ss -an | grep 50000
 
 # Test UDP connectivity from client
-nc -u HOST_IP 50000
+nc -u BIRDBOX_HOST_IP 50000
 ```
 
 **Firewall blocking UDP**:
@@ -309,14 +320,14 @@ ports:
 **Increase buffer sizes**:
 ```bash
 # .env
-AUDIO_FANOUT_BUFFER_SAMPLES=30
-VIDEO_FANOUT_BUFFER_FRAMES=5
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=30
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=5
 ```
 
 **Switch to TCP for reliability**:
 ```bash
 # .env
-RTSP_TRANSPORT_PROTOCOL=tcp
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp
 ```
 
 **Check network quality**:
@@ -337,7 +348,7 @@ mtr DOORBIRD_IP
 **Solution**: Switch to TCP transport
 ```bash
 # .env
-RTSP_TRANSPORT_PROTOCOL=tcp
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp
 ```
 
 **Why**: UDP-over-UDP (RTSP UDP through VPN UDP tunnel) causes packet loss amplification and timeout conflicts.
@@ -356,10 +367,10 @@ lsof -i UDP:50000
 # or: netstat -an | grep 50000
 ```
 
-**Verify HOST_IP is correct**:
+**Verify BIRDBOX_HOST_IP is correct**:
 ```bash
 # Should be your server's LAN IP, not 127.0.0.1
-echo $HOST_IP
+echo $BIRDBOX_HOST_IP
 ```
 
 **For Docker, ensure proper mapping**:
@@ -385,7 +396,7 @@ candidate: 192.168.1.1 ...
 candidate: xxxx.local ...
 ```
 
-**Fix**: Set explicit HOST_IP in `.env`
+**Fix**: Set explicit BIRDBOX_HOST_IP in `.env`
 
 ### NAT Hairpinning Issues
 
@@ -396,8 +407,8 @@ candidate: xxxx.local ...
 **Solution**: Use split-brain DNS configuration
 ```bash
 # .env
-HOST_IP=YOUR_PUBLIC_IP        # For external clients
-HOST_IP_LAN=YOUR_LAN_IP       # For internal clients
+BIRDBOX_HOST_IP=YOUR_PUBLIC_IP        # For external clients
+BIRDBOX_HOST_IP_LAN=YOUR_LAN_IP       # For internal clients
 ```
 
 This advertises both IPs, allowing WebRTC to choose the right one.
@@ -451,10 +462,10 @@ iptables -A INPUT -p udp --dport 50000 -s 192.168.0.0/16 -j ACCEPT
 **Configuration**:
 ```bash
 # .env
-RTSP_TRANSPORT_PROTOCOL=tcp     # Required for VPN
-AUDIO_FANOUT_BUFFER_SAMPLES=30  # Increase for VPN latency
-VIDEO_FANOUT_BUFFER_FRAMES=5    # Increase for VPN latency
-HOST_IP=YOUR_TAILSCALE_IP       # Use Tailscale IP
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp     # Required for VPN
+BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=30  # Increase for VPN latency
+BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=5    # Increase for VPN latency
+BIRDBOX_HOST_IP=YOUR_TAILSCALE_IP       # Use Tailscale IP
 ```
 
 **Why TCP**: Avoids UDP-over-UDP issues that cause packet loss and timeouts
@@ -465,11 +476,11 @@ If server has multiple interfaces (WiFi + Ethernet, multiple VLANs):
 
 ```bash
 # Bind to specific interface IP
-HOST_IP=192.168.1.154  # Use IP of interface you want
+BIRDBOX_HOST_IP=192.168.1.154  # Use IP of interface you want
 
 # Or use split-brain for multiple interfaces
-HOST_IP=10.0.0.154          # Primary interface
-HOST_IP_LAN=192.168.1.154   # Secondary interface
+BIRDBOX_HOST_IP=10.0.0.154          # Primary interface
+BIRDBOX_HOST_IP_LAN=192.168.1.154   # Secondary interface
 ```
 
 ### Kubernetes/Container Orchestration
@@ -490,7 +501,7 @@ HOST_IP_LAN=192.168.1.154   # Secondary interface
 
 **Connection established**:
 ```
-🌐 Using HOST_IP from environment: 192.168.1.154
+🌐 Using BIRDBOX_HOST_IP from environment: 192.168.1.154
 🌐 Bound WebRTC UDP socket to 192.168.1.154:50000
 New WebSocket connection: session <uuid>
 ```
@@ -539,30 +550,30 @@ mtr DOORBIRD_IP
 
 **LAN Deployment (Simple)**:
 ```bash
-HOST_IP=192.168.1.154
-UDP_PORT=50000
-RTSP_TRANSPORT_PROTOCOL=udp
+BIRDBOX_HOST_IP=192.168.1.154
+BIRDBOX_UDP_PORT=50000
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=udp
 ```
 
 **Docker Deployment**:
 ```bash
-HOST_IP=192.168.1.154       # Your host's LAN IP
-UDP_PORT=50000
+BIRDBOX_HOST_IP=192.168.1.154       # Your host's LAN IP
+BIRDBOX_UDP_PORT=50000
 # docker-compose.yml must have: "50000:50000/udp"
 ```
 
 **VPN Deployment**:
 ```bash
-HOST_IP=100.64.x.x          # Your VPN IP
-UDP_PORT=50000
-RTSP_TRANSPORT_PROTOCOL=tcp # Required!
+BIRDBOX_HOST_IP=100.64.x.x          # Your VPN IP
+BIRDBOX_UDP_PORT=50000
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp # Required!
 ```
 
 **Dual Network (LAN + Internet)**:
 ```bash
-HOST_IP=203.0.113.50        # Public IP
-HOST_IP_LAN=192.168.1.154   # LAN IP
-UDP_PORT=50000
+BIRDBOX_HOST_IP=203.0.113.50        # Public IP
+BIRDBOX_HOST_IP_LAN=192.168.1.154   # LAN IP
+BIRDBOX_UDP_PORT=50000
 # Configure router port forwarding
 ```
 
@@ -570,7 +581,7 @@ UDP_PORT=50000
 
 1. **WebRTC is client-server**, not peer-to-peer
 2. **No STUN/TURN needed** for LAN deployments
-3. **HOST_IP must match** server's actual IP (not 127.0.0.1)
+3. **BIRDBOX_HOST_IP must match** server's actual IP (not 127.0.0.1)
 4. **UDP port mapping is critical** in Docker
 5. **Use TCP transport** for VPN/complex networks
 6. **Split-brain DNS** solves NAT hairpinning issues
