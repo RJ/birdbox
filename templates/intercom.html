@@ -274,6 +274,42 @@
         }
     }
 
+    // Firefox-specific diagnostics
+    async function diagnoseFirefoxMicrophone() {
+        log('🔍 Running Firefox microphone diagnostics...');
+
+        // Check if we're in Firefox
+        const isFirefox = navigator.userAgent.toLowerCase().includes('firefox');
+        log('Browser detected:', isFirefox ? 'Firefox' : 'Other');
+
+        // Check MediaDevices API availability
+        if (!navigator.mediaDevices) {
+            log('❌ MediaDevices API not available');
+            return false;
+        }
+
+        if (!navigator.mediaDevices.getUserMedia) {
+            log('❌ getUserMedia not available');
+            return false;
+        }
+
+        log('✅ MediaDevices API available');
+
+        // Check for permission API
+        if (navigator.permissions) {
+            try {
+                const permission = await navigator.permissions.query({ name: 'microphone' });
+                log('Microphone permission state:', permission.state);
+            } catch (e) {
+                log('Could not query microphone permission:', e.message);
+            }
+        } else {
+            log('Permissions API not available');
+        }
+
+        return true;
+    }
+
     function setConnectionStatus(text) {
         connectionStatusEl.textContent = text;
     }
@@ -366,6 +402,9 @@
             if (!localStream) {
                 log('Requesting microphone access...');
 
+                // Run Firefox diagnostics first
+                await diagnoseFirefoxMicrophone();
+
                 // Use privacy-compliant approach: request permission first, then enumerate devices
                 // Try progressive constraint strategies for Firefox compatibility
                 const constraintStrategies = [
@@ -390,6 +429,30 @@
                             noiseSuppression: false,
                             autoGainControl: false,
                         }
+                    },
+
+                    // Strategy 4: Firefox-specific - try without any constraints
+                    { audio: {} },
+
+                    // Strategy 5: Firefox-specific - try with minimal object
+                    { audio: { deviceId: undefined } },
+
+                    // Strategy 6: Firefox-specific - try with empty audio object
+                    { audio: null },
+
+                    // Strategy 7: Legacy fallback for older Firefox versions
+                    async () => {
+                        if (navigator.getUserMedia) {
+                            log('Trying legacy navigator.getUserMedia...');
+                            return new Promise((resolve, reject) => {
+                                navigator.getUserMedia(
+                                    { audio: true },
+                                    (stream) => resolve(stream),
+                                    (error) => reject(error)
+                                );
+                            });
+                        }
+                        throw new Error('Legacy getUserMedia not available');
                     }
                 ];
 
@@ -408,10 +471,19 @@
                         debugMediaDevices();
 
                     } catch (e) {
-                        log(`✗ Strategy ${i + 1} failed:`, e.message);
+                        log(`✗ Strategy ${i + 1} failed:`, e.name, e.message);
+                        console.error('Full error details:', e);
+
+                        // Check for specific Firefox errors
+                        if (e.name === 'NotFoundError' || e.message.includes('object can not be found')) {
+                            log('This appears to be a Firefox-specific device access issue');
+                        }
+
                         if (i === constraintStrategies.length - 1) {
-                            // Last strategy failed, re-throw the error
-                            throw e;
+                            // Last strategy failed, provide detailed error info
+                            const errorMsg = `All microphone access strategies failed. Last error: ${e.name} - ${e.message}`;
+                            log(errorMsg);
+                            throw new Error(errorMsg);
                         }
                     }
                 }
