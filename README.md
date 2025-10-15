@@ -1,140 +1,50 @@
-# Birdbox
+# Birdbox - a DoorBird WebRTC Proxy
 
-An API proxy that presents a more modern doorbird API, including two-way browser-friendly WebRTC.
+An API proxy that exposes a DoorBird device via WebRTC to browsers.
 
-* **Fan-out** will open 1 connection (on-demand) to doorbird for audio and video, and fan-out to any number of clients.
-* **Low-latency** best efforts made to reduce latency whereever possible
-* **WebRTC
+* WebRTC video repackaged from doorbird's rtsp stream at highest available resolution.
+* WebRTC 2-way audio, with the necessary transcoding.
+* Smart fan-out, so even with multiple clients, birdbox only makes 1 connection to doorbird's A/V streams.
+* UDP muxing and no STUN/TURN needed. WebRTC exposed on a single fixed UDP port.
+* Single docker image deployment.
+* Low latency / overhead.
+* PWA web app (add to homescreen like an app).
+* Relay control (Open gates button).
 
-## Features
+<img src="https://github.com/RJ/birdbox/blob/main/docs/birdbox-web-screenshot.png">
 
-- **Real-time Audio & Video Streaming**: H.264 video and Opus audio via WebRTC
-- **Push-to-Talk**: Two-way communication with automatic G.711 μ-law transcoding
-- **Low Latency**: Tuned as best I can for low end-to-end latency
-- **Smart Fan-out**: A single DoorBird audio/video connection shared across multiple viewers
-- **Smart Connection Management**: Automatic connect/disconnect based on viewer presence
-- **Progressive Web App**: Install on mobile devices for app-like experience
-- **Door Control**: Open gates/doors remotely via web interface
-- **Dockerized**
+## Why does this exist
 
-## Quick Start
+I wanted a better integration with home assistant. not written that yet, but i decided it needed
+webrtc support first.
 
-### Prerequisites
+Also I wanted to add some features to the doorbird app relating to recognising visitors, so having
+a web based client i could iterate on seemed like a good idea.
 
-- Docker Desktop (for macOS/Windows) or Docker + Docker Compose (for Linux)
-- DoorBird smart doorbell on your local network
-- DoorBird user credentials with "watch always" permission
+I used my 25 years of experience as a software developer to make an LLM write this entire project,
+and it went surprisingly well. I didn't write a single line of code. So it was partly an experiment.
+
 
 ### 1. Configuration
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root or set these vars for your docker deployment somehow.
+(also for my convenience, birdbox attempts to read a .env file from the current directory on boot)
 
 ```bash
 # DoorBird Configuration
 BIRDBOX_DOORBIRD_URL=http://192.168.1.100
-BIRDBOX_DOORBIRD_USER=your_username
+BIRDBOX_DOORBIRD_USER=abcdef0001
 BIRDBOX_DOORBIRD_PASSWORD=your_password
 
-# WebRTC Configuration
-BIRDBOX_HOST_IP=192.168.1.50          # Your Docker host's IP address
-BIRDBOX_UDP_PORT=50000                # WebRTC media port
+# WebRTC Configuration - public ip that exposes the webrtc service (and port 50000/udp).
+BIRDBOX_HOST_IP=192.168.1.50
+# change to tcp if there's any udp-over-udp tunneling happening, such as
+# using a vpn or complex docker networking.
+BIRDBOX_RTSP_TRANSPORT_PROTOCOL=udp
 
-# Optional: Latency tuning (defaults shown)
-BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=20    # ~400ms audio latency
-BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=4      # ~330ms video latency
-BIRDBOX_RTSP_TRANSPORT_PROTOCOL=udp       # or "tcp" for VPN/complex networks
-
-# Logging
-RUST_LOG=info
+# more options and docs in env.example
 ```
 
-See [`env.example`](env.example) for full configuration options with detailed explanations.
-
-### 2. Start the Service
-
-```bash
-docker compose up -d
-```
-
-### 3. Access the Interface
-
-Open in your browser:
-- **From Docker host**: http://localhost:3000/intercom
-- **From other devices**: http://YOUR_HOST_IP:3000/intercom
-
-## Architecture Overview
-
-```
-┌─────────────────┐
-│  DoorBird       │
-│  Smart Doorbell │
-└────────┬────────┘
-         │ HTTP/RTSP
-         │ G.711 μ-law audio @ 8kHz
-         │ H.264 video @ 12fps
-         │
-    ┌────▼─────────────────────────────────┐
-    │  Birdbox Server (Rust)               │
-    │                                       │
-    │  ┌─────────────────────────────────┐ │
-    │  │ Audio Pipeline                  │ │
-    │  │ G.711 → Resample → Opus         │ │
-    │  └─────────────────────────────────┘ │
-    │                                       │
-    │  ┌─────────────────────────────────┐ │
-    │  │ Video Pipeline                  │ │
-    │  │ H.264 pass-through (no transcode)│ │
-    │  └─────────────────────────────────┘ │
-    │                                       │
-    │  ┌─────────────────────────────────┐ │
-    │  │ Fanout System                   │ │
-    │  │ Single DoorBird → N clients     │ │
-    │  └─────────────────────────────────┘ │
-    └────────┬──────────────────────────────┘
-             │ WebRTC (WebSocket signaling)
-             │ Opus audio @ 48kHz
-             │ H.264 video
-             │
-    ┌────────▼──────────────────┐
-    │  Web Browsers             │
-    │  Chrome, Firefox, Safari  │
-    │  Desktop & Mobile         │
-    └───────────────────────────┘
-```
-
-**Key Design:**
-- **Fanout Architecture**: One DoorBird connection serves multiple viewers
-- **Zero Video Transcoding**: H.264 packets forwarded directly to WebRTC
-- **Smart Lifecycle**: Auto-connect when first viewer joins, auto-disconnect after grace period
-- **Direct LAN Communication**: No STUN/TURN servers needed for local network
-
-## Configuration
-
-### Network Setup
-
-For optimal performance:
-- Place Docker host and DoorBird on the same LAN segment
-- Configure `BIRDBOX_HOST_IP` to your Docker host's LAN IP
-- Ensure UDP port 50000 is not blocked by firewall
-
-### Latency Tuning
-
-**Audio latency** (default: ~400ms):
-```bash
-BIRDBOX_AUDIO_FANOUT_BUFFER_SAMPLES=20  # Lower = less latency, more dropouts
-```
-
-**Video latency** (default: ~330ms):
-```bash
-BIRDBOX_VIDEO_FANOUT_BUFFER_FRAMES=4    # Lower = less latency, more frame drops
-```
-
-**Network reliability** (VPN/Docker):
-```bash
-BIRDBOX_RTSP_TRANSPORT_PROTOCOL=tcp     # Use TCP for VPN scenarios
-```
-
-See [docs/LATENCY.md](docs/LATENCY.md) for detailed tuning guide.
 
 ## Troubleshooting
 
@@ -177,9 +87,9 @@ Access at http://localhost:3000/intercom
 cargo test
 ```
 
-### Documentation
+### Dev Docs
 
-For developers:
+For developers / LLM agents:
 - [Architecture Overview](docs/ARCHITECTURE.md) - System design and components
 - [Development Guide](docs/DEVELOPMENT.md) - Building and contributing
 - [Latency Analysis](docs/LATENCY.md) - Performance tuning details
@@ -187,20 +97,7 @@ For developers:
 - [DoorBird API Reference](docs/DOORBIRD_API.md) - Official API documentation
 - [PWA Setup](docs/PWA.md) - Progressive Web App installation
 
-## Technology Stack
-
-- **Rust** - High-performance systems language
-- **Axum** - Web server and WebSocket handling
-- **webrtc-rs** - WebRTC implementation
-- **ffmpeg** - Video stream handling
-- **Opus** - Audio encoding
-- **Askama** - HTML templating
-- **Docker** - Containerization
-
 ## License
 
 TODO
 
-## Contributing
-
-Contributions welcome! Please check [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for guidelines.
