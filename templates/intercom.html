@@ -249,7 +249,7 @@
     let isTransmitting = false;
     let othersTransmitting = false;
 
-    // Add this function to debug media devices
+    // Debug media devices (only after permission granted)
     async function debugMediaDevices() {
         try {
             const devices = await navigator.mediaDevices.enumerateDevices();
@@ -260,6 +260,14 @@
 
             if (audioInputs.length === 0) {
                 console.warn('⚠️  No audio input devices found!');
+            } else {
+                // Check if devices have proper labels (indicates permissions granted)
+                const devicesWithLabels = audioInputs.filter(device => device.label && device.label.length > 0);
+                if (devicesWithLabels.length === 0) {
+                    log('ℹ️  Audio devices found but no labels - this is expected before permission grant');
+                } else {
+                    log(`✓ Found ${devicesWithLabels.length} audio devices with labels (permission granted)`);
+                }
             }
         } catch (e) {
             console.error('Failed to enumerate devices:', e);
@@ -358,30 +366,85 @@
             if (!localStream) {
                 log('Requesting microphone access...');
 
-                // Try with more permissive constraints first
-                try {
-                    localStream = await navigator.mediaDevices.getUserMedia({
+                // Use privacy-compliant approach: request permission first, then enumerate devices
+                // Try progressive constraint strategies for Firefox compatibility
+                const constraintStrategies = [
+                    // Strategy 1: Most permissive (recommended by privacy spec)
+                    { audio: true },
+
+                    // Strategy 2: Basic constraints without processing
+                    {
                         audio: {
-                            echoCancellation: false,  // Try disabling first
+                            echoCancellation: false,
                             noiseSuppression: false,
                             autoGainControl: false,
                         }
-                    });
-                } catch (e) {
-                    // Fallback to even more basic constraints
-                    console.warn('First attempt failed, trying basic constraints:', e);
-                    localStream = await navigator.mediaDevices.getUserMedia({
-                        audio: true  // Most permissive
-                    });
+                    },
+
+                    // Strategy 3: With sample rate constraints
+                    {
+                        audio: {
+                            sampleRate: 48000,
+                            channelCount: 1,
+                            echoCancellation: false,
+                            noiseSuppression: false,
+                            autoGainControl: false,
+                        }
+                    }
+                ];
+
+                let streamAcquired = false;
+
+                for (let i = 0; i < constraintStrategies.length && !streamAcquired; i++) {
+                    try {
+                        log(`Trying constraint strategy ${i + 1}...`);
+                        log('Using constraints:', constraintStrategies[i]);
+
+                        localStream = await navigator.mediaDevices.getUserMedia(constraintStrategies[i]);
+                        streamAcquired = true;
+                        log(`✓ Microphone access granted with strategy ${i + 1}`);
+
+                        // Now that we have permission, enumerate devices for debugging
+                        debugMediaDevices();
+
+                    } catch (e) {
+                        log(`✗ Strategy ${i + 1} failed:`, e.message);
+                        if (i === constraintStrategies.length - 1) {
+                            // Last strategy failed, re-throw the error
+                            throw e;
+                        }
+                    }
                 }
-                log('Microphone access granted');
+
+                if (!streamAcquired) {
+                    throw new Error('All microphone access strategies failed');
+                }
             }
 
-            // Wait for peer connection to be in a stable state
-            if (pc.connectionState !== 'connected' && pc.iceConnectionState !== 'connected') {
-                log('Waiting for peer connection to be ready...');
-                // Wait a bit for connection to stabilize
-                await new Promise(resolve => setTimeout(resolve, 500));
+            // Ensure peer connection is in a stable state before adding tracks
+            const maxWaitTime = 5000; // 5 seconds max
+            const checkInterval = 100; // Check every 100ms
+            let waited = 0;
+
+            while (waited < maxWaitTime) {
+                const pcReady = (pc.connectionState === 'connected' || pc.connectionState === 'connecting') &&
+                    (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed' || pc.iceConnectionState === 'checking');
+
+                if (pcReady) {
+                    log(`✓ Peer connection ready (pc: ${pc.connectionState}, ice: ${pc.iceConnectionState})`);
+                    break;
+                }
+
+                if (waited === 0) {
+                    log(`Waiting for peer connection to be ready... (pc: ${pc.connectionState}, ice: ${pc.iceConnectionState})`);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, checkInterval));
+                waited += checkInterval;
+            }
+
+            if (waited >= maxWaitTime) {
+                throw new Error(`Peer connection not ready after ${maxWaitTime}ms (pc: ${pc.connectionState}, ice: ${pc.iceConnectionState})`);
             }
 
             // Add microphone track to peer connection
@@ -412,7 +475,7 @@
 
         } catch (e) {
             console.error('Failed to start transmission:', e);
-            alert('Failed to access microphone: ' + e.message);
+            alert('Failed to access microphone: ' + e.message + '\n\nTry refreshing the page and granting microphone permissions when prompted.');
             // Reset state on error
             isTransmitting = false;
             updateTransmitButton();
@@ -659,6 +722,7 @@
 
     // Auto-connect on page load
     document.addEventListener('DOMContentLoaded', () => {
+        // Check what devices are available (will show empty labels until permission granted)
         debugMediaDevices();
         log('Auto-connecting to intercom...');
         connect();
