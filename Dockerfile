@@ -51,18 +51,18 @@ RUN apt-get update && \
     apt-get install -y libopus0 libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
+# own the libs (from arch-specific paths)
+# (no {} brace expansion in this shell).
+RUN mkdir /mylibs && cd / && tar vcf - /usr/lib/*-linux-gnu/libopus.so.* /usr/lib/*-linux-gnu/libssl.so.* /usr/lib/*-linux-gnu/libcrypto.so.* | tar xf - -C /mylibs
+RUN find /mylibs/
+
 # Stage 6: Final runtime with distroless
-FROM gcr.io/distroless/cc-debian12:debug
+FROM gcr.io/distroless/cc-debian12
 
 WORKDIR /app
 
-# Copy the per-arch shared libs and symlinks.
-# This glob pattern matches:
-#     /usr/lib/x86_64-linux-gnu/ on amd64
-#     /usr/lib/aarch64-linux-gnu/ on arm64
-COPY --from=runtime-deps /usr/lib/*-linux-gnu/libopus.so.*   /lib/*-linux-gnu/
-COPY --from=runtime-deps /usr/lib/*-linux-gnu/libssl.so.*    /lib/*-linux-gnu/
-COPY --from=runtime-deps /usr/lib/*-linux-gnu/libcrypto.so.* /lib/*-linux-gnu/
+# Copy and unpack our libs, preserving the arch-specific paths
+COPY --from=runtime-deps /mylibs/* /
 
 # Copy the binary from builder
 COPY --from=builder /usr/src/birdbox-rs/target/release/birdbox-rs .
